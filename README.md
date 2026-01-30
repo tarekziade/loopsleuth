@@ -115,9 +115,12 @@ The tool automatically finds all `.py` files in subdirectories and groups result
 - `-m, --model <MODEL>` - Path to the GGUF model file (required)
 - `-t, --threads <THREADS>` - Number of threads for inference (default: 4)
 - `--max-tokens <MAX_TOKENS>` - Maximum tokens to generate (default: 512)
+- `--context-size <SIZE>` - Context window size in tokens (default: 4096)
 - `-v, --verbose` - Show verbose llama.cpp output (useful for debugging)
 - `-o, --output <FILE>` - Save analysis report to markdown file
 - `-d, --details` - Show detailed report in stdout (always included in file output)
+
+**Note**: If you get "Insufficient Space" errors, increase `--context-size` to 8192 or higher for very large functions.
 
 ## Example
 
