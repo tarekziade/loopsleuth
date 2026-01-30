@@ -183,12 +183,12 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("📊 Analyzing {} function(s)...", total_functions_count);
-    println!();
+    println!("📊 Analyzing {} function(s)...\n", total_functions_count);
 
     let mut all_file_results: Vec<FileResults> = Vec::new();
     let mut total_functions = 0;
     let mut current_func_num = 0;
+    let mut quadratic_count = 0;
 
     // Process each file
     for file_path in &python_files {
@@ -202,26 +202,34 @@ fn main() -> Result<()> {
 
             // Calculate progress bar (for all messages)
             let progress_pct = (current_func_num as f32 / total_functions_count as f32 * 100.0) as usize;
-            let bar_width = 20;
+            let bar_width = 30;
             let filled = (current_func_num as f32 / total_functions_count as f32 * bar_width as f32) as usize;
             let empty = bar_width - filled;
             let progress_bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+            // Get filename for display
+            let filename = file_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let func_display = format!("{}::{}", filename, func.name);
 
             // Skip large functions if requested
             if cli.skip_large > 0 {
                 let line_count = func.source.lines().count();
                 if line_count > cli.skip_large {
-                    print!("\r\x1b[K  {} {}% [{}/{}] ⊗ Skipped: {} (too large: {} lines)",
-                           progress_bar, progress_pct, current_func_num, total_functions_count, func.name, line_count);
+                    // Update display and continue
+                    print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | ⊗ Skipped: {} (too large)",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           quadratic_count, func_display);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
-                    println!();
                     continue;
                 }
             }
 
             // Show current function being analyzed with progress bar
-            print!("\r\x1b[K  {} {}% [{}/{}] 🔍 Analyzing: {}...",
-                   progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+            print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | 🔍 Analyzing: {}",
+                   progress_bar, progress_pct, current_func_num, total_functions_count,
+                   quadratic_count, func_display);
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
             // Debug: Show which function we're about to analyze
@@ -241,10 +249,10 @@ fn main() -> Result<()> {
             let analysis_result = match analysis_result {
                 Ok(res) => res,
                 Err(_) => {
-                    print!("\r\x1b[K  {} {}% [{}/{}] 💥 Error: {} (panic caught)",
-                           progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                    print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | 💥 Error: {} (panic caught)",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           quadratic_count, func_display);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
-                    println!();
                     continue;
                 }
             };
@@ -252,9 +260,11 @@ fn main() -> Result<()> {
             match analysis_result {
                 Ok(analysis) => {
                     if is_quadratic_detected(&analysis) {
+                        quadratic_count += 1;
+
                         // Show that we're generating solution
-                        print!("\r\x1b[K  {} {}% [{}/{}] 💡 Generating solution for: {}...",
-                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                        print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | 💡 Generating solution...",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, quadratic_count);
                         std::io::Write::flush(&mut std::io::stdout()).ok();
 
                         // Get optimization suggestion (also wrapped to prevent aborts)
@@ -264,11 +274,6 @@ fn main() -> Result<()> {
                         .ok()
                         .and_then(|r| r.ok());
 
-                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  QUADRATIC: {}",
-                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        println!();
-
                         file_results.push(AnalysisResult {
                             function: func,
                             is_quadratic: true,
@@ -276,11 +281,6 @@ fn main() -> Result<()> {
                             solution,
                         });
                     } else {
-                        print!("\r\x1b[K  {} {}% [{}/{}] ✓ OK: {}",
-                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        println!();
-
                         file_results.push(AnalysisResult {
                             function: func,
                             is_quadratic: false,
@@ -292,17 +292,10 @@ fn main() -> Result<()> {
                 Err(e) => {
                     // Show warning for skipped functions
                     let error_msg = e.to_string();
-                    if error_msg.contains("too large") {
-                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  Warning: {} ({})",
-                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name, error_msg);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        println!();
-                    } else {
-                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  Error: {} ({})",
-                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name, e);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        println!();
-                    }
+                    print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | ⚠️  {}",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           quadratic_count, if error_msg.contains("too large") { "Function too large" } else { "Error" });
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
                 }
             }
         }
@@ -315,10 +308,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // Show completion
-    println!();
-    println!("✅ Analysis complete!");
-    println!();
+    // Clear the progress line and show completion
+    print!("\r\x1b[K");
+    println!("✅ Analysis complete!\n");
 
     // Flatten results for compatibility
     let all_results: Vec<AnalysisResult> = all_file_results
