@@ -1,0 +1,44 @@
+# Rust
+/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Model files (too large for git)
+*.gguf
+/models/
+
+# Generated reports
+*.md.backup
+report.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Python (for test files)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.pyc
+
+# Python virtual environment
+bin/
+lib/
+pyvenv.cfg
+include/
+share/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
