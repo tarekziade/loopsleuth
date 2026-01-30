@@ -11,7 +11,7 @@ use rustpython_ast::{Mod, Stmt};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::AsRawFd;
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -49,6 +49,10 @@ struct Cli {
     /// Show detailed report in stdout (always included in --output file)
     #[arg(short, long)]
     details: bool,
+
+    /// Skip functions larger than this many lines (0 = no limit)
+    #[arg(long, default_value_t = 0)]
+    skip_large: usize,
 }
 
 #[derive(Clone)]
@@ -116,6 +120,19 @@ impl Drop for StderrSuppressor {
 }
 
 fn main() -> Result<()> {
+    // Set up panic hook to provide better error messages
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("\n❌ Fatal error occurred!");
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("   Error: {}", s);
+        }
+        if let Some(location) = panic_info.location() {
+            eprintln!("   Location: {}:{}", location.file(), location.line());
+        }
+        eprintln!("\n💡 Try using --context-size 8192 or larger if analyzing big functions");
+        eprintln!("   Or set RUST_BACKTRACE=1 for full backtrace\n");
+    }));
+
     let cli = Cli::parse();
 
     // Show initialization message (before suppressor)
@@ -144,6 +161,7 @@ fn main() -> Result<()> {
         .context("Invalid context size")?;
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(Some(n_ctx))
+        .with_n_batch(4096)
         .with_n_threads(cli.threads as i32);
 
     let mut ctx = model.new_context(&backend, ctx_params)
@@ -156,11 +174,21 @@ fn main() -> Result<()> {
     let file_count = python_files.len();
 
     println!("🔍 Scanning {} Python file(s)...", file_count);
-    print!("📊 Analyzing functions: ");
-    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    // First pass: count total functions
+    let mut total_functions_count = 0;
+    for path in &python_files {
+        if let Ok(functions) = extract_functions(path) {
+            total_functions_count += functions.len();
+        }
+    }
+
+    println!("📊 Analyzing {} function(s)...", total_functions_count);
+    println!();
 
     let mut all_file_results: Vec<FileResults> = Vec::new();
     let mut total_functions = 0;
+    let mut current_func_num = 0;
 
     // Process each file
     for file_path in &python_files {
@@ -169,14 +197,77 @@ fn main() -> Result<()> {
 
         for func in functions {
             total_functions += 1;
-            print!(".");  // Progress indicator
+
+            current_func_num += 1;
+
+            // Calculate progress bar (for all messages)
+            let progress_pct = (current_func_num as f32 / total_functions_count as f32 * 100.0) as usize;
+            let bar_width = 20;
+            let filled = (current_func_num as f32 / total_functions_count as f32 * bar_width as f32) as usize;
+            let empty = bar_width - filled;
+            let progress_bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+            // Skip large functions if requested
+            if cli.skip_large > 0 {
+                let line_count = func.source.lines().count();
+                if line_count > cli.skip_large {
+                    print!("\r\x1b[K  {} {}% [{}/{}] ⊗ Skipped: {} (too large: {} lines)",
+                           progress_bar, progress_pct, current_func_num, total_functions_count, func.name, line_count);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    println!();
+                    continue;
+                }
+            }
+
+            // Show current function being analyzed with progress bar
+            print!("\r\x1b[K  {} {}% [{}/{}] 🔍 Analyzing: {}...",
+                   progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
-            match analyze_complexity(&model, &mut ctx, &func, cli.max_tokens) {
+            // Debug: Show which function we're about to analyze
+            if cli.verbose {
+                eprintln!("\nDEBUG: About to analyze {} from {}", func.name, func.file_path.display());
+            }
+
+            // Wrap in catch_unwind to prevent aborts
+            let analysis_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                analyze_complexity(&model, &mut ctx, &func, cli.max_tokens)
+            }));
+
+            if cli.verbose {
+                eprintln!("DEBUG: Finished analyzing {}", func.name);
+            }
+
+            let analysis_result = match analysis_result {
+                Ok(res) => res,
+                Err(_) => {
+                    print!("\r\x1b[K  {} {}% [{}/{}] 💥 Error: {} (panic caught)",
+                           progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    println!();
+                    continue;
+                }
+            };
+
+            match analysis_result {
                 Ok(analysis) => {
                     if is_quadratic_detected(&analysis) {
-                        // Get optimization suggestion
-                        let solution = propose_solution(&model, &mut ctx, &func, cli.max_tokens).ok();
+                        // Show that we're generating solution
+                        print!("\r\x1b[K  {} {}% [{}/{}] 💡 Generating solution for: {}...",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                        // Get optimization suggestion (also wrapped to prevent aborts)
+                        let solution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            propose_solution(&model, &mut ctx, &func, cli.max_tokens)
+                        }))
+                        .ok()
+                        .and_then(|r| r.ok());
+
+                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  QUADRATIC: {}",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        println!();
 
                         file_results.push(AnalysisResult {
                             function: func,
@@ -185,6 +276,11 @@ fn main() -> Result<()> {
                             solution,
                         });
                     } else {
+                        print!("\r\x1b[K  {} {}% [{}/{}] ✓ OK: {}",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        println!();
+
                         file_results.push(AnalysisResult {
                             function: func,
                             is_quadratic: false,
@@ -197,10 +293,15 @@ fn main() -> Result<()> {
                     // Show warning for skipped functions
                     let error_msg = e.to_string();
                     if error_msg.contains("too large") {
-                        print!("⚠");  // Warning symbol instead of dot
+                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  Warning: {} ({})",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name, error_msg);
                         std::io::Write::flush(&mut std::io::stdout()).ok();
+                        println!();
                     } else {
-                        println!("\n⚠️  Error analyzing {}: {}", func.name, e);
+                        print!("\r\x1b[K  {} {}% [{}/{}] ⚠️  Error: {} ({})",
+                               progress_bar, progress_pct, current_func_num, total_functions_count, func.name, e);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        println!();
                     }
                 }
             }
@@ -214,7 +315,10 @@ fn main() -> Result<()> {
         }
     }
 
-    println!();  // New line after progress dots
+    // Show completion
+    println!();
+    println!("✅ Analysis complete!");
+    println!();
 
     // Flatten results for compatibility
     let all_results: Vec<AnalysisResult> = all_file_results
@@ -410,11 +514,20 @@ fn generate_response(
     // Tokenize the prompt (AddBos::Always adds BOS token)
     let tokens = model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)?;
 
+    // Get context size from context
+    let ctx_size = ctx.n_ctx() as usize;
+
+    // Reserve space for response tokens - need prompt + response + safety margin
+    let safety_margin = 100; // Extra tokens for safety
+    let max_prompt_size = ctx_size.saturating_sub(max_tokens as usize).saturating_sub(safety_margin);
+
     // Check if prompt is too large
-    if tokens.len() > 3500 {
+    if tokens.len() > max_prompt_size {
         return Err(anyhow::anyhow!(
-            "Function too large ({} tokens). Consider using --context-size to increase limit.",
-            tokens.len()
+            "Function too large ({} tokens, context allows {}). Use --context-size {} or --skip-large.",
+            tokens.len(),
+            max_prompt_size,
+            ctx_size * 2
         ));
     }
 
@@ -423,6 +536,10 @@ fn generate_response(
 
     // Use larger batch size to accommodate big functions
     let mut batch = LlamaBatch::new(4096, 1);
+
+    // Dynamically adjust max_tokens if prompt is large to avoid context overflow
+    let available_tokens = ctx_size.saturating_sub(tokens.len()).saturating_sub(safety_margin);
+    let actual_max_tokens = max_tokens.min(available_tokens as i32);
 
     // Add all tokens to the batch. Only request logits for the last token
     for (i, token) in tokens.iter().enumerate() {
@@ -436,7 +553,7 @@ fn generate_response(
     let mut response = String::new();
     let mut n_cur = tokens.len() as i32;
 
-    for _ in 0..max_tokens {
+    for _ in 0..actual_max_tokens {
         let mut candidates: Vec<_> = ctx.candidates().collect();
 
         if candidates.is_empty() {
