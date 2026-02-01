@@ -8,6 +8,16 @@
 
 **Status**: Production-ready, fully functional
 
+## Documentation Index
+
+When working on this project, refer to these documents for detailed information:
+
+- **[README.md](README.md)** - User documentation, installation guide, and usage examples
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Technical design decisions, implementation details, and system architecture
+- **[docs/COMPARISON.md](docs/COMPARISON.md)** - Comparison with alternative tools and approaches
+- **[docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)** - SQLite cache system implementation, performance impact, and usage
+- **[AGENTS.md](AGENTS.md)** - This file - Quick reference for AI agents working on the codebase
+
 ## Quick Start for Agents
 
 ### Building
@@ -37,6 +47,8 @@ cargo run --release -- --model ./models/model.gguf ./test_examples --details
 - **LLM**: llama.cpp via llama-cpp-2 bindings
 - **CLI**: clap 4.5
 - **File traversal**: walkdir
+- **Cache**: rusqlite (SQLite with bundled feature)
+- **Hashing**: sha2 (SHA256 for function fingerprints)
 
 ### Key Components
 
@@ -50,12 +62,18 @@ cargo run --release -- --model ./models/model.gguf ./test_examples --details
    - Extract function definitions recursively
    - Support for both files and directories
 
-3. **LLM Integration**
+3. **Cache System** (see [docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md))
+   - SQLite database for persistent storage
+   - SHA256 hashing for function fingerprinting
+   - Automatic cache invalidation on code changes
+   - ~100x speedup on repeated runs
+
+4. **LLM Integration**
    - Two-stage analysis: detection → solution
    - Greedy sampling for deterministic results
    - Stderr suppression for clean output
 
-4. **Output Generation**
+5. **Output Generation**
    - Concise summary (default)
    - Detailed markdown report (--details)
    - File export (--output)
@@ -65,7 +83,11 @@ cargo run --release -- --model ./models/model.gguf ./test_examples --details
 ```
 LoopSleuth/
 ├── src/
-│   └── main.rs              # ~700 lines, all logic
+│   └── main.rs              # ~900 lines, all logic (includes cache)
+├── docs/                    # Documentation
+│   ├── ARCHITECTURE.md      # Technical design
+│   ├── COMPARISON.md        # Tool comparisons
+│   └── CACHE_IMPLEMENTATION.md  # Cache system details
 ├── test_examples/           # Python test files
 │   ├── sample.py
 │   └── performance_issues.py
@@ -73,13 +95,13 @@ LoopSleuth/
 │   └── test_parse.rs        # Parser testing
 ├── Cargo.toml               # Dependencies
 ├── README.md                # User documentation
-├── ARCHITECTURE.md          # Technical design
-├── AGENTS.md                # This file
+├── AGENTS.md                # This file (agent quick reference)
 ├── setup.sh                 # Interactive setup
 ├── Makefile                 # Build commands
 └── .gitignore
 
 Not in git:
+├── .loopsleuth_cache/       # SQLite cache database
 ├── models/                  # GGUF model files (~2-15GB)
 ├── target/                  # Build artifacts
 └── report.md                # Generated reports
@@ -112,6 +134,12 @@ Not in git:
 **Add new complexity pattern:**
 - Modify system prompt in `analyze_complexity()`
 - Add test case to `test_examples/`
+
+**Modify cache behavior:**
+- See `AnalysisCache` struct in `main.rs`
+- Database schema in `AnalysisCache::new()`
+- Cache key generation in `AnalysisCache::hash_function()`
+- Full details in [docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)
 
 ## Important Implementation Details
 
@@ -248,9 +276,10 @@ fn propose_solution(...) {
 1. **Unit tests**: Add proper test suite
 2. **Config file**: `.loopsleuth.toml` for settings
 3. **JSON output**: For CI/CD integration
-4. **Caching**: Remember analyzed functions
+4. ~~**Caching**: Remember analyzed functions~~ ✅ **IMPLEMENTED** (see docs/CACHE_IMPLEMENTATION.md)
 
 ### Nice to Have
+- Cache enhancements (TTL, size limits, sharing)
 - Multiple language support
 - Batch processing (parallel analysis)
 - VS Code extension
@@ -278,20 +307,29 @@ When modifying this project:
 
 ## Resources
 
+### External Documentation
 - **Rust docs**: https://doc.rust-lang.org/
 - **RustPython**: https://github.com/RustPython/RustPython
 - **llama.cpp**: https://github.com/ggerganov/llama.cpp
 - **clap**: https://docs.rs/clap/
+- **rusqlite**: https://docs.rs/rusqlite/
+
+### Internal Documentation
+- **[README.md](README.md)** - User guide and installation
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System design and technical details
+- **[docs/COMPARISON.md](docs/COMPARISON.md)** - Alternative tools and approaches
+- **[docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)** - Cache system design and usage
 
 ## Contact & Support
 
 This is an educational project demonstrating:
 - Rust + Python AST analysis
 - Local LLM integration
+- SQLite-based caching for performance
 - Clean CLI UX design
 - Practical code optimization
 
-For questions or issues, refer to the README.md and ARCHITECTURE.md files.
+For questions or issues, refer to the documentation files listed above.
 
 ---
 

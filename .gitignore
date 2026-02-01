@@ -12,6 +12,9 @@ Cargo.lock
 *.md.backup
 report.md
 
+# Cache directory
+.loopsleuth_cache/
+
 # IDE
 .idea/
 .vscode/

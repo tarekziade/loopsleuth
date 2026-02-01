@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use walkdir::WalkDir;
+use rusqlite::{Connection, params};
+use sha2::{Sha256, Digest};
+use std::fs;
 
 #[derive(Parser)]
 #[command(name = "loopsleuth")]
@@ -53,6 +56,18 @@ struct Cli {
     /// Skip functions larger than this many lines (0 = no limit)
     #[arg(long, default_value_t = 0)]
     skip_large: usize,
+
+    /// Disable caching of analysis results
+    #[arg(long)]
+    no_cache: bool,
+
+    /// Clear the cache before running analysis
+    #[arg(long)]
+    clear_cache: bool,
+
+    /// Directory for cache storage (default: .loopsleuth_cache)
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -74,6 +89,144 @@ struct AnalysisResult {
 struct FileResults {
     file_path: PathBuf,
     results: Vec<AnalysisResult>,
+}
+
+/// Cache for storing LLM analysis results
+struct AnalysisCache {
+    conn: Connection,
+    enabled: bool,
+}
+
+#[derive(Debug)]
+struct CachedResult {
+    is_quadratic: bool,
+    analysis: String,
+    solution: Option<String>,
+}
+
+impl AnalysisCache {
+    /// Create or open cache database
+    fn new(cache_dir: Option<PathBuf>, enabled: bool) -> Result<Self> {
+        if !enabled {
+            // Return a dummy cache with an in-memory database
+            return Ok(Self {
+                conn: Connection::open_in_memory()?,
+                enabled: false,
+            });
+        }
+
+        let cache_dir = cache_dir.unwrap_or_else(|| PathBuf::from(".loopsleuth_cache"));
+
+        // Create cache directory if it doesn't exist
+        fs::create_dir_all(&cache_dir)
+            .context("Failed to create cache directory")?;
+
+        let db_path = cache_dir.join("analysis_cache.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open cache database")?;
+
+        // Create table if it doesn't exist
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS analysis_results (
+                function_hash TEXT PRIMARY KEY,
+                is_quadratic INTEGER NOT NULL,
+                analysis TEXT NOT NULL,
+                solution TEXT,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        Ok(Self {
+            conn,
+            enabled: true,
+        })
+    }
+
+    /// Compute SHA256 hash of function source code
+    fn hash_function(source: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(source.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Check if analysis result exists in cache
+    fn get(&self, func: &FunctionInfo) -> Result<Option<CachedResult>> {
+        if !self.enabled {
+            return Ok(None);
+        }
+
+        let hash = Self::hash_function(&func.source);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT is_quadratic, analysis, solution FROM analysis_results WHERE function_hash = ?1"
+        )?;
+
+        let result = stmt.query_row(params![hash], |row| {
+            Ok(CachedResult {
+                is_quadratic: row.get::<_, i32>(0)? != 0,
+                analysis: row.get(1)?,
+                solution: row.get(2)?,
+            })
+        });
+
+        match result {
+            Ok(cached) => Ok(Some(cached)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Store analysis result in cache
+    fn put(&self, func: &FunctionInfo, is_quadratic: bool, analysis: &str, solution: Option<&str>) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let hash = Self::hash_function(&func.source);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO analysis_results (function_hash, is_quadratic, analysis, solution, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![hash, is_quadratic as i32, analysis, solution, timestamp],
+        )?;
+
+        Ok(())
+    }
+
+    /// Clear all cache entries
+    fn clear(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        self.conn.execute("DELETE FROM analysis_results", [])?;
+        Ok(())
+    }
+
+    /// Get cache statistics
+    fn stats(&self) -> Result<(usize, usize)> {
+        if !self.enabled {
+            return Ok((0, 0));
+        }
+
+        let total: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM analysis_results",
+            [],
+            |row| row.get(0)
+        )?;
+
+        let quadratic: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM analysis_results WHERE is_quadratic = 1",
+            [],
+            |row| row.get(0)
+        )?;
+
+        Ok((total, quadratic))
+    }
 }
 
 /// RAII guard that redirects stderr to /dev/null and restores it on drop
@@ -169,6 +322,15 @@ fn main() -> Result<()> {
 
     println!("   ✅ Ready! (context: {} tokens)\n", cli.context_size);
 
+    // Initialize cache
+    let cache = AnalysisCache::new(cli.cache_dir.clone(), !cli.no_cache)?;
+
+    // Clear cache if requested
+    if cli.clear_cache {
+        println!("🗑️  Clearing cache...");
+        cache.clear()?;
+    }
+
     // Collect Python files
     let python_files = collect_python_files(&cli.python_path)?;
     let file_count = python_files.len();
@@ -226,7 +388,29 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Show current function being analyzed with progress bar
+            // Check cache first
+            if let Ok(Some(cached)) = cache.get(&func) {
+                // Cache hit! Use cached results
+                if cached.is_quadratic {
+                    quadratic_count += 1;
+                }
+
+                print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | 💾 Cached: {}",
+                       progress_bar, progress_pct, current_func_num, total_functions_count,
+                       quadratic_count, func_display);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                file_results.push(AnalysisResult {
+                    function: func,
+                    is_quadratic: cached.is_quadratic,
+                    analysis: cached.analysis,
+                    solution: cached.solution,
+                });
+
+                continue;
+            }
+
+            // Cache miss - run LLM analysis
             print!("\r\x1b[K{} {}% [{}/{}] | Quadratic: {} | 🔍 Analyzing: {}",
                    progress_bar, progress_pct, current_func_num, total_functions_count,
                    quadratic_count, func_display);
@@ -259,7 +443,8 @@ fn main() -> Result<()> {
 
             match analysis_result {
                 Ok(analysis) => {
-                    if is_quadratic_detected(&analysis) {
+                    let is_quadratic = is_quadratic_detected(&analysis);
+                    if is_quadratic {
                         quadratic_count += 1;
 
                         // Show that we're generating solution
@@ -274,6 +459,9 @@ fn main() -> Result<()> {
                         .ok()
                         .and_then(|r| r.ok());
 
+                        // Store in cache
+                        let _ = cache.put(&func, true, &analysis, solution.as_deref());
+
                         file_results.push(AnalysisResult {
                             function: func,
                             is_quadratic: true,
@@ -281,6 +469,9 @@ fn main() -> Result<()> {
                             solution,
                         });
                     } else {
+                        // Store in cache
+                        let _ = cache.put(&func, false, &analysis, None);
+
                         file_results.push(AnalysisResult {
                             function: func,
                             is_quadratic: false,
@@ -323,7 +514,7 @@ fn main() -> Result<()> {
     let quadratic_count = quadratic_results.len();
 
     // Print concise summary
-    print_summary(&all_file_results, file_count, total_functions, quadratic_count);
+    print_summary(&all_file_results, file_count, total_functions, quadratic_count, &cache, cli.no_cache);
 
     // Print detailed markdown report only if --details flag is set
     if quadratic_count > 0 && cli.details {
@@ -335,7 +526,7 @@ fn main() -> Result<()> {
 
     // Save to file if requested (always includes full details)
     if let Some(output_path) = &cli.output {
-        write_report_to_file(output_path, &all_results, &quadratic_results, total_functions, quadratic_count)?;
+        write_report_to_file(output_path, &all_results, &quadratic_results, total_functions, quadratic_count, &cache, cli.no_cache)?;
         println!("📄 Report saved to: {}", output_path.display());
     }
 
@@ -582,7 +773,7 @@ fn is_quadratic_detected(analysis: &str) -> bool {
     analysis_lower.contains("quadratic") || analysis_lower.contains("o(n²)") || analysis_lower.contains("o(n^2)")
 }
 
-fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, quadratic_count: usize) {
+fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, quadratic_count: usize, cache: &AnalysisCache, no_cache: bool) {
     println!("\n╔═════════════════════════════╗");
     println!("║ LOOPSLEUTH ANALYSIS SUMMARY ║");
     println!("╚═════════════════════════════╝");
@@ -594,6 +785,15 @@ fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, 
     println!("📊 Total functions analyzed: {}", total);
     println!("⚠️  Functions with O(n²) complexity: {}", quadratic_count);
     println!("✓  Functions OK: {}", total - quadratic_count);
+
+    // Show cache statistics if enabled
+    if !no_cache {
+        if let Ok((cache_total, cache_quadratic)) = cache.stats() {
+            if cache_total > 0 {
+                println!("💾 Cache entries: {} total, {} quadratic", cache_total, cache_quadratic);
+            }
+        }
+    }
 
     if quadratic_count > 0 {
         println!("\n🔴 QUADRATIC COMPLEXITY DETECTED IN:");
@@ -684,6 +884,8 @@ fn write_report_to_file(
     quadratic_results: &[&AnalysisResult],
     total: usize,
     quadratic_count: usize,
+    cache: &AnalysisCache,
+    no_cache: bool,
 ) -> Result<()> {
     use std::io::Write;
 
@@ -701,6 +903,15 @@ fn write_report_to_file(
     writeln!(file, "- **Total functions analyzed:** {}", total)?;
     writeln!(file, "- **Functions with O(n²) complexity:** {}", quadratic_count)?;
     writeln!(file, "- **Functions OK:** {}", total - quadratic_count)?;
+
+    // Add cache statistics to report
+    if !no_cache {
+        if let Ok((cache_total, cache_quadratic)) = cache.stats() {
+            if cache_total > 0 {
+                writeln!(file, "- **Cache entries:** {} total, {} quadratic", cache_total, cache_quadratic)?;
+            }
+        }
+    }
     writeln!(file)?;
 
     if quadratic_count > 0 {

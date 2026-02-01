@@ -12,6 +12,8 @@ walkdir = "2.5"
 llama-cpp-2 = "0.1"
 libc = "0.2.180"
 chrono = "0.4.43"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3
