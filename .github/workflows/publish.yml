@@ -51,7 +51,7 @@ jobs:
           # Install Rust in the build environment
           CIBW_BEFORE_ALL_LINUX: "curl https://sh.rustup.rs -sSf | sh -s -- -y && source $HOME/.cargo/env"
           CIBW_BEFORE_ALL_MACOS: "curl https://sh.rustup.rs -sSf | sh -s -- -y && source $HOME/.cargo/env"
-          CIBW_BEFORE_ALL_WINDOWS: "rustup-init -y"
+          CIBW_BEFORE_ALL_WINDOWS: "powershell -Command \"Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe; .\\rustup-init.exe -y --default-toolchain stable; Remove-Item rustup-init.exe\""
           CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
           CIBW_ENVIRONMENT_MACOS: 'PATH="$HOME/.cargo/bin:$PATH"'
           CIBW_ENVIRONMENT_WINDOWS: 'PATH="$UserProfile\.cargo\bin;$PATH"'
