@@ -171,7 +171,7 @@ For development or if you prefer to build from source:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/loopsleuth.git
+git clone https://github.com/tarekziade/loopsleuth.git
 cd loopsleuth
 
 # Build the project

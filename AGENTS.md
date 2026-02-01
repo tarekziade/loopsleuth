@@ -24,6 +24,7 @@ When working on this project, refer to these documents for detailed information:
 - **[docs/PYTHON_INSTALL.md](docs/PYTHON_INSTALL.md)** - Comprehensive pip installation guide with CI/CD integration
 - **[docs/PIP_INSTALL_SETUP.md](docs/PIP_INSTALL_SETUP.md)** - Implementation details of the pip package setup
 - **[docs/PYPI_PUBLISHING.md](docs/PYPI_PUBLISHING.md)** - Guide for publishing to PyPI with GitHub Actions
+- **[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)** - Complete checklist for preparing and releasing new versions to PyPI
 
 ### Documentation Conventions
 
@@ -131,7 +132,8 @@ LoopSleuth/
 │   ├── PYTHON_INSTALL.md    # Pip installation guide
 │   ├── PIP_INSTALL_SETUP.md # Implementation details
 │   ├── PYPI_PUBLISHING.md   # PyPI publishing guide
-│   └── QUICKSTART.md        # Quick start guide
+│   ├── QUICKSTART.md        # Quick start guide
+│   └── RELEASE_CHECKLIST.md # Release preparation checklist
 ├── .github/
 │   └── workflows/
 │       ├── publish.yml      # PyPI publishing workflow
@@ -387,6 +389,7 @@ When modifying this project:
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System design and technical details
 - **[docs/COMPARISON.md](docs/COMPARISON.md)** - Alternative tools and approaches
 - **[docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)** - Cache system design and usage
+- **[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)** - Complete release preparation and PyPI publishing checklist
 
 ## Contact & Support
 
