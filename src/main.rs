@@ -11,13 +11,13 @@ use rustpython_ast::{Mod, Stmt};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use walkdir::WalkDir;
 use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
 use std::fs;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
@@ -544,11 +544,13 @@ impl AnalysisCache {
     }
 }
 
-/// RAII guard that redirects stderr to /dev/null and restores it on drop
+/// RAII guard that redirects stderr to /dev/null and restores it on drop (Unix only)
+#[cfg(unix)]
 struct StderrSuppressor {
     original_stderr: Option<i32>,
 }
 
+#[cfg(unix)]
 impl StderrSuppressor {
     fn new() -> Result<Self> {
         unsafe {
@@ -575,6 +577,7 @@ impl StderrSuppressor {
     }
 }
 
+#[cfg(unix)]
 impl Drop for StderrSuppressor {
     fn drop(&mut self) {
         if let Some(original) = self.original_stderr {
@@ -584,6 +587,17 @@ impl Drop for StderrSuppressor {
                 libc::close(original);
             }
         }
+    }
+}
+
+/// No-op stderr suppressor for Windows (stderr suppression not available)
+#[cfg(not(unix))]
+struct StderrSuppressor;
+
+#[cfg(not(unix))]
+impl StderrSuppressor {
+    fn new() -> Result<Self> {
+        Ok(StderrSuppressor)
     }
 }
 
