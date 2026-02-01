@@ -68,7 +68,8 @@ LoopSleuth looks for configuration in this order:
 ```toml
 [settings]
 # Optional: Set default CLI options (can be overridden by command-line flags)
-model = "./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
+# Recommended: Use the 7B model for best accuracy
+model = "~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf"
 threads = 4
 max_tokens = 512
 context_size = 4096
@@ -154,12 +155,13 @@ loopsleuth download
 ```
 
 **Recommended models**:
-- **Qwen2.5-Coder (3B)** ⭐ - Best for code analysis (~2GB)
+- **Qwen2.5-Coder (7B)** ⭐ - Best for code analysis, excellent accuracy (~4.7GB)
+- **Qwen2.5-Coder (3B)** - Faster but less accurate; not recommended for n-plus-one check (~2GB)
 - **Devstral Small 2 (24B)** - Highest accuracy, requires more RAM (~15GB)
 - **Qwen2.5 (3B)** - General purpose, good balance (~2GB)
 - **Qwen2.5 (0.5B)** - Very fast, lower accuracy (~400MB)
 
-The interactive download command will guide you through selecting and downloading the best model for your needs.
+The interactive download command will guide you through selecting and downloading the best model for your needs. **Note:** The 7B model provides significantly better results than the 3B model, especially for detecting N+1 problems and generating accurate code fixes.
 
 ## Building from Source
 
@@ -177,15 +179,15 @@ cd loopsleuth
 # Build the project
 cargo build --release
 
-# Download a model
+# Download the recommended model (7B)
 mkdir -p models
 pip install huggingface_hub
-hf download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF \
-  qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+hf download unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF \
+  Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf \
   --local-dir ./models
 
 # Run
-./target/release/loopsleuth -m ./models/qwen*.gguf ./src
+./target/release/loopsleuth -m ./models/Qwen2.5-Coder-7B*.gguf ./src
 ```
 
 **Note**: The first build takes several minutes as it compiles llama.cpp from source. Subsequent builds are much faster.
@@ -198,12 +200,16 @@ For detailed build instructions and troubleshooting, see [docs/PYTHON_INSTALL.md
 
 Analyze a single Python file (runs all checks by default):
 ```bash
-loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf example.py
+# Using the recommended 7B model
+loopsleuth -m ~/.loopsleuth/models/Qwen2.5-Coder-7B*.gguf example.py
+
+# Or use the 3B model for faster (but less accurate) analysis
+loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b*.gguf example.py
 ```
 
 Analyze an entire directory (recursive):
 ```bash
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
+loopsleuth -m ~/.loopsleuth/models/Qwen2.5-Coder-7B*.gguf ./src
 ```
 
 The tool automatically finds all `.py` files in subdirectories and groups results by file.
@@ -328,7 +334,7 @@ Sample output:
 ```
 🔧 Initializing LoopSleuth...
    ⚙️  Setting up LLM backend...
-   📦 Loading model: ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf...
+   📦 Loading model: ./models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf...
    ✅ Ready! (context: 4096 tokens)
 
 🔍 Scanning 1 Python file(s)...
@@ -428,10 +434,13 @@ The intelligent caching system provides significant benefits:
 
 | Model | Size | Speed | Accuracy | Best For |
 |-------|------|-------|----------|----------|
-| **Qwen2.5-Coder (3B)** ⭐ | ~2GB | Fast | Excellent | **Recommended** - Code-specific training |
+| **Qwen2.5-Coder (7B)** ⭐ | ~4.7GB | Fast | Excellent | **Recommended** - Best accuracy, minimal false positives |
+| Qwen2.5-Coder (3B) | ~2GB | Fast | Good | Faster but less accurate (not recommended for n-plus-one) |
 | Devstral Small 2 (24B) | ~15GB | Slower | Excellent | Production, very detailed analysis |
 | Qwen2.5 (3B) | ~2GB | Fast | Good | General purpose |
 | Qwen2.5 (0.5B) | ~400MB | Very Fast | Fair | Quick checks, testing |
+
+**Note:** The 7B model eliminates most false positives seen with the 3B model, especially for N+1 detection. It also generates more accurate code diffs and solutions.
 
 ## Performance
 
