@@ -166,6 +166,7 @@ Not in git:
 3. **Build**: `cargo build --release` (takes ~10s)
 4. **Test**: Run against test files
 5. **Check warnings**: `cargo clippy`
+6. **Verify YAML**: Use `yamllint` for GitHub workflows and config files
 
 ### Common Tasks
 
@@ -190,6 +191,18 @@ Not in git:
 - Database schema in `AnalysisCache::new()`
 - Cache key generation in `AnalysisCache::hash_function()`
 - Full details in [docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)
+
+**Validate YAML files:**
+```bash
+# Check GitHub workflow syntax
+yamllint .github/workflows/*.yml
+
+# Use relaxed rules (fewer style warnings)
+yamllint -d relaxed .github/workflows/*.yml
+
+# Check specific file
+yamllint .github/workflows/test-build.yml
+```
 
 ## Important Implementation Details
 
