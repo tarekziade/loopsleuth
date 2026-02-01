@@ -39,6 +39,7 @@ jobs:
         run: python -m build
 
       - name: Install package
+        shell: bash
         run: pip install dist/*.whl
 
       - name: Test CLI
