@@ -1,0 +1,502 @@
+# LoopSleuth Performance Checks Configuration
+#
+# This file defines the performance checks that LoopSleuth runs on Python code.
+# You can customize checks, add new ones, or modify existing prompts.
+
+[settings]
+# Default CLI options (all are optional and can be overridden by CLI flags)
+# model = "./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf"  # Path to GGUF model
+# threads = 4                                                 # Number of inference threads
+# max_tokens = 1024                                           # Maximum tokens to generate (increased for detailed diffs)
+# context_size = 4096                                         # Context window size
+# skip_large = 0                                              # Skip functions larger than N lines
+# cache_dir = ".loopsleuth_cache"                             # Cache directory path
+
+# Check Definitions
+# Each [[check]] section defines one check with the following fields:
+#
+# - key: Short identifier used in CLI (e.g., --checks quadratic)
+# - name: Display name shown in reports
+# - description: What the check detects
+# - category: Grouping category (e.g., "performance", "ml-specific")
+# - keyword: Keyword the LLM should include in response if issue detected
+# - detection_prompt: Template for the LLM prompt that detects the issue
+#                     Use {function_source} as placeholder for the function code
+# - solution_prompt: Template for the LLM prompt that generates solutions
+#                   Use {function_source} as placeholder for the function code
+
+[[check]]
+key = "quadratic"
+name = "Quadratic Complexity"
+description = "Detects O(n²) or worse time complexity patterns (nested loops, etc.)"
+category = "performance"
+keyword = "QUADRATIC"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Your task is to analyze Python functions and identify if they contain quadratic O(n²) or worse time complexity patterns.
+
+Common quadratic patterns include:
+- Nested loops iterating over the same or related data structures
+- Loop with inner O(n) operations (like list.remove(), list.index(), string concatenation)
+- Repeated linear searches within a loop
+- Naive sorting or comparison algorithms
+
+Respond with "QUADRATIC" if you detect O(n²) or worse complexity, followed by a brief explanation.
+Respond with "OK" if the complexity is better than quadratic.<|im_end|>
+<|im_start|>user
+Analyze the time complexity of this Python function:
+
+```python
+{function_source}
+```
+
+Is this function quadratic (O(n²)) or worse?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix O(n²) time complexity.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has O(n²) time complexity:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "linear-in-loop"
+name = "Linear Operations in Loops"
+description = "Detects hidden O(n) operations in loops (list.remove(), x in list, etc.)"
+category = "performance"
+keyword = "LINEAR_IN_LOOP"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for hidden O(n) operations inside loops that create O(n²) complexity.
+
+Look for these patterns in loops:
+- `x in list` membership tests (O(n) per check)
+- `list.remove(x)` operations (O(n) per removal)
+- `list.index(x)` lookups (O(n) per lookup)
+- `list.pop(0)` from front of list (O(n) per pop)
+- String concatenation with += in loops
+
+Respond with "LINEAR_IN_LOOP" if you detect these patterns, followed by a brief explanation.
+Respond with "OK" if no such patterns exist.<|im_end|>
+<|im_start|>user
+Analyze this Python function for hidden linear operations in loops:
+
+```python
+{function_source}
+```
+
+Does this function have O(n) operations inside loops?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix hidden O(n) operations in loops.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has hidden O(n) operations in loops:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "n-plus-one"
+name = "N+1 Problem"
+description = "Detects repeated expensive operations in loops (file I/O, network, model loading)"
+category = "performance"
+keyword = "N_PLUS_ONE"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for N+1 patterns where expensive operations are repeated in loops.
+
+Look for these patterns inside loops:
+- File I/O operations (open, read, write)
+- Network requests (HTTP calls, API requests)
+- Database queries
+- Model loading or initialization
+- Resource loading (images, data files)
+
+Respond with "N_PLUS_ONE" if you detect repeated expensive operations in loops, followed by a brief explanation.
+Respond with "OK" if no such patterns exist.<|im_end|>
+<|im_start|>user
+Analyze this Python function for N+1 patterns:
+
+```python
+{function_source}
+```
+
+Does this function repeat expensive operations in loops?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix repeated expensive operations in loops.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has repeated expensive operations in loops:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "expensive-sort-key"
+name = "Expensive Sort Key"
+description = "Detects O(n) key functions in sort/sorted operations"
+category = "performance"
+keyword = "EXPENSIVE_SORT_KEY"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for expensive key functions in sort/sorted operations.
+
+Look for sort/sorted with key functions that are O(n):
+- `key=lambda x: list.index(x)` - O(n) lookup per comparison
+- `key=lambda x: x in other_list` - O(n) membership test
+- `key=lambda x: re.match(pattern, x)` - expensive regex per comparison
+- Any key function that does lookups in unsorted data
+
+Respond with "EXPENSIVE_SORT_KEY" if you detect O(n) key functions in sorting, followed by a brief explanation.
+Respond with "OK" if sorting is efficient.<|im_end|>
+<|im_start|>user
+Analyze this Python function for expensive sort key functions:
+
+```python
+{function_source}
+```
+
+Does this function use expensive key functions in sorting?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix expensive O(n) key functions in sorting.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has expensive O(n) key functions in sorting:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "unbounded-alloc"
+name = "Unbounded Allocations"
+description = "Detects growing allocations in loops (string concat, repeated cat)"
+category = "performance"
+keyword = "UNBOUNDED_ALLOC"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for unbounded memory allocations in loops.
+
+Look for these patterns in loops:
+- String concatenation with += (creates new string each iteration)
+- Repeated list/array concatenation
+- `torch.cat()` or `np.concatenate()` in loops (reallocates memory)
+- Growing strings/buffers without pre-allocation
+
+Respond with "UNBOUNDED_ALLOC" if you detect unbounded allocations in loops, followed by a brief explanation.
+Respond with "OK" if memory usage is bounded or pre-allocated.<|im_end|>
+<|im_start|>user
+Analyze this Python function for unbounded allocations:
+
+```python
+{function_source}
+```
+
+Does this function have unbounded memory allocations in loops?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix unbounded memory allocations in loops.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has unbounded memory allocations in loops:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "conversion-churn"
+name = "Conversion Churn"
+description = "Detects repeated CPU/GPU or tensor/array conversions in loops"
+category = "ml-specific"
+keyword = "CONVERSION_CHURN"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for repeated data conversion overhead in ML code.
+
+Look for these patterns in loops:
+- Repeated `.cpu()` or `.cuda()` or `.to(device)` calls
+- Repeated `.numpy()` conversions from tensors
+- Repeated `torch.tensor()` or `torch.from_numpy()` conversions
+- Back-and-forth between CPU and GPU
+- Repeated conversions between tensor types
+
+Respond with "CONVERSION_CHURN" if you detect repeated conversions in loops, followed by a brief explanation.
+Respond with "OK" if conversions are minimized or done once.<|im_end|>
+<|im_start|>user
+Analyze this Python function for conversion churn:
+
+```python
+{function_source}
+```
+
+Does this function repeatedly convert data between formats/devices?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix repeated data conversions.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has repeated data conversions:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "ml-footguns"
+name = "ML Anti-patterns"
+description = "Detects ML-specific issues (repeated tokenization, mask rebuilding)"
+category = "ml-specific"
+keyword = "ML_FOOTGUN"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for common ML/Transformers performance anti-patterns.
+
+Look for these patterns:
+- Repeated tokenization in loops (tokenize once, reuse)
+- Attention mask rebuilding on every iteration
+- Python loops iterating over individual tensor elements
+- Creating new tensors in tight loops
+- Moving tensors to device repeatedly
+
+Respond with "ML_FOOTGUN" if you detect ML-specific performance issues, followed by a brief explanation.
+Respond with "OK" if ML operations are efficient.<|im_end|>
+<|im_start|>user
+Analyze this Python function for ML performance issues:
+
+```python
+{function_source}
+```
+
+Does this function have ML-specific performance anti-patterns?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix ML-specific performance issues.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has ML-specific performance issues:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "growing-container"
+name = "Growing Containers"
+description = "Detects loops that grow containers while iterating"
+category = "performance"
+keyword = "GROWING_CONTAINER"
+detection_prompt = """<|im_start|>system
+You are a code complexity analyzer. Analyze Python functions for patterns where containers grow while being iterated.
+
+Look for these patterns:
+- Iterating over a list while appending to it
+- Using `for item in list:` and then `list.append()`
+- Growing collections during iteration without bounds
+- Modifying the collection being iterated
+
+Respond with "GROWING_CONTAINER" if you detect unbounded growth during iteration, followed by a brief explanation.
+Respond with "OK" if iteration is safe.<|im_end|>
+<|im_start|>user
+Analyze this Python function for growing containers:
+
+```python
+{function_source}
+```
+
+Does this function grow containers while iterating over them?<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert Python performance optimization consultant. Provide solutions to fix containers growing during iteration.
+
+IMPORTANT: Format your response as a unified diff showing only the changes needed.
+
+Output format:
+1. Brief explanation of the issue (1-2 sentences)
+2. Optimization strategy
+3. Unified diff showing the changes:
+
+```diff
+--- original
++++ optimized
+@@ -line,count +line,count @@
+ unchanged line
+-removed line
++added line
+ unchanged line
+```
+
+Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_start|>user
+This Python function has containers growing during iteration:
+
+```python
+{function_source}
+```
+
+Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_start|>assistant
+"""

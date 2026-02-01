@@ -39,6 +39,15 @@ lib/
 pyvenv.cfg
 include/
 share/
+.test_venv/
+venv/
+env/
+
+# Python package build
+build/
+dist/
+*.egg-info/
+.eggs/
 
 # Build artifacts
 *.o

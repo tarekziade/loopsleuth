@@ -3,6 +3,10 @@ name = "loopsleuth"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "loopsleuth_bin"
+path = "src/main.rs"
+
 [dependencies]
 rustpython-parser = "0.4.0"
 rustpython-ast = "0.4.0"
@@ -14,6 +18,8 @@ libc = "0.2.180"
 chrono = "0.4.43"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
 
 [profile.release]
 opt-level = 3

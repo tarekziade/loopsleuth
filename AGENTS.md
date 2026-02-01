@@ -12,31 +12,60 @@
 
 When working on this project, refer to these documents for detailed information:
 
+### Core Documentation
 - **[README.md](README.md)** - User documentation, installation guide, and usage examples
+- **[AGENTS.md](AGENTS.md)** - This file - Quick reference for AI agents working on the codebase
+
+### Technical Documentation (in `docs/`)
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - Quick start guide for new users (pip install + download-model)
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Technical design decisions, implementation details, and system architecture
 - **[docs/COMPARISON.md](docs/COMPARISON.md)** - Comparison with alternative tools and approaches
 - **[docs/CACHE_IMPLEMENTATION.md](docs/CACHE_IMPLEMENTATION.md)** - SQLite cache system implementation, performance impact, and usage
-- **[AGENTS.md](AGENTS.md)** - This file - Quick reference for AI agents working on the codebase
+- **[docs/PYTHON_INSTALL.md](docs/PYTHON_INSTALL.md)** - Comprehensive pip installation guide with CI/CD integration
+- **[docs/PIP_INSTALL_SETUP.md](docs/PIP_INSTALL_SETUP.md)** - Implementation details of the pip package setup
+- **[docs/PYPI_PUBLISHING.md](docs/PYPI_PUBLISHING.md)** - Guide for publishing to PyPI with GitHub Actions
+
+### Documentation Conventions
+
+**IMPORTANT**: All technical documentation should be created and maintained in the `docs/` directory.
+
+- **User-facing files in root**: README.md, LICENSE, AGENTS.md only
+- **Technical documentation**: Always in `docs/` directory
+- **When creating new documentation**: Place in `docs/` and update this index
+- **When updating features**: Update relevant docs in `docs/` and README.md
 
 ## Quick Start for Agents
 
-### Building
+### For Development (Building from Source)
+
 ```bash
+# Build
 cargo build --release
-```
 
-### Running
-```bash
+# Run
 ./target/release/loopsleuth --model <model.gguf> <python_file_or_directory>
+
+# Test
+cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
 ```
 
-### Testing
+### For Testing Pip Package
+
 ```bash
-# Test on sample files
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
+# Install in development mode
+pip install -e .
+
+# Download a model
+loopsleuth download-model
+
+# List models
+loopsleuth list-models
+
+# Run analysis
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples
 
 # With details
-cargo run --release -- --model ./models/model.gguf ./test_examples --details
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples --details
 ```
 
 ## Architecture
@@ -83,27 +112,48 @@ cargo run --release -- --model ./models/model.gguf ./test_examples --details
 ```
 LoopSleuth/
 ├── src/
-│   └── main.rs              # ~900 lines, all logic (includes cache)
+│   └── main.rs              # ~1200 lines, all Rust logic (includes cache)
+├── python/                  # Python package
+│   └── loopsleuth/
+│       ├── __init__.py      # Package exports
+│       ├── __main__.py      # CLI entry point with subcommands
+│       └── models.py        # Model download/management
 ├── docs/                    # Documentation
 │   ├── ARCHITECTURE.md      # Technical design
 │   ├── COMPARISON.md        # Tool comparisons
-│   └── CACHE_IMPLEMENTATION.md  # Cache system details
+│   ├── CACHE_IMPLEMENTATION.md  # Cache system details
+│   ├── PYTHON_INSTALL.md    # Pip installation guide
+│   ├── PIP_INSTALL_SETUP.md # Implementation details
+│   ├── PYPI_PUBLISHING.md   # PyPI publishing guide
+│   └── QUICKSTART.md        # Quick start guide
+├── .github/
+│   └── workflows/
+│       ├── publish.yml      # PyPI publishing workflow
+│       └── test-build.yml   # CI testing workflow
 ├── test_examples/           # Python test files
 │   ├── sample.py
 │   └── performance_issues.py
 ├── examples/
 │   └── test_parse.rs        # Parser testing
-├── Cargo.toml               # Dependencies
+├── Cargo.toml               # Rust dependencies & binary config
+├── pyproject.toml           # Python package metadata
+├── setup.py                 # setuptools-rust configuration
+├── MANIFEST.in              # Package file inclusion rules
+├── loopsleuth.toml          # Default configuration
 ├── README.md                # User documentation
 ├── AGENTS.md                # This file (agent quick reference)
-├── setup.sh                 # Interactive setup
+├── LICENSE                  # MIT license
+├── setup.sh                 # Interactive setup (legacy)
 ├── Makefile                 # Build commands
 └── .gitignore
 
 Not in git:
 ├── .loopsleuth_cache/       # SQLite cache database
-├── models/                  # GGUF model files (~2-15GB)
-├── target/                  # Build artifacts
+├── ~/.loopsleuth/models/    # GGUF model files (~2-15GB) [pip install]
+├── models/                  # GGUF model files [source build]
+├── target/                  # Rust build artifacts
+├── build/                   # Python build artifacts
+├── dist/                    # Python distribution packages
 └── report.md                # Generated reports
 ```
 

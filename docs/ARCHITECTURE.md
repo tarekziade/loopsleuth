@@ -2,7 +2,7 @@
 
 ## Overview
 
-LoopSleuth is a CLI tool that combines static analysis (AST parsing) with LLM-based semantic analysis to detect quadratic complexity patterns in Python code.
+LoopSleuth is a CLI tool that combines static analysis (AST parsing) with LLM-based semantic analysis to detect multiple performance issues in Python code. It uses a multi-check architecture that allows running 8 different performance checks on each function, with intelligent caching per check.
 
 ## Components
 
@@ -24,26 +24,48 @@ LoopSleuth is a CLI tool that combines static analysis (AST parsing) with LLM-ba
   - File path and line numbers
   - Both top-level functions and class methods
 
-### 4. LLM Inference (`llama-cpp-2`)
+### 4. Check Registry
+- Defines 8 performance checks with check-specific prompts
+- Each check has:
+  - Unique key (e.g., "quadratic", "linear-in-loop")
+  - Detection prompt function
+  - Solution prompt function
+  - Issue detection function (keyword matching)
+- Supports filtering checks via CLI (`--checks`, `--exclude`)
+
+### 5. LLM Inference (`llama-cpp-2`)
 - Local inference using GGUF quantized models
 - No external API calls - runs entirely offline
-- Two-stage analysis pipeline:
-  1. **Detection**: Identifies O(n²) patterns
-  2. **Solution**: Proposes optimizations
+- Two-stage analysis pipeline (per check):
+  1. **Detection**: Identifies specific issue using check-specific prompt
+  2. **Solution**: Proposes optimizations if issue detected
 
-### 5. Report Generator
+### 6. Cache System (`rusqlite`)
+- SQLite database with composite key: (function_hash, check_key)
+- Caches results per (function, check) combination
+- Automatically migrates from old single-check schema
+- Statistics show cache entries per check
+
+### 7. Report Generator
 - **Three output modes**:
-  - Default: Concise summary only
-  - `--details`: Full analysis with code and solutions
+  - Default: Concise summary showing issues grouped by function
+  - `--details`: Full analysis with code and solutions for all issues per function
   - `--output FILE`: Save complete markdown report
 - Groups results by file when analyzing directories
+- Shows all issues detected for each function
 - Shows file paths with line numbers (for IDE navigation)
-- Progress feedback during initialization and analysis
+- Progress feedback during initialization and analysis (shows current check)
 
 ## Analysis Pipeline
 
 ```
 Python Files/Directories
+    ↓
+[Parse CLI Args]
+    ↓
+[If --list-checks: Show Checks and Exit]
+    ↓
+[Get Checks to Run] ← Based on --checks or --exclude
     ↓
 [Show Progress: Initializing]
     ↓
@@ -51,9 +73,11 @@ Python Files/Directories
     ↓
 [Load Model] ← llama.cpp
     ↓
+[Initialize Cache] ← SQLite, auto-migrate if old schema
+    ↓
 [File Discovery] ← walkdir (recursive for directories)
     ↓
-[Show Progress: Scanning N files]
+[Show Progress: Scanning N files, Running M checks]
     ↓
 [For Each File]
     ↓
@@ -63,36 +87,68 @@ Python Files/Directories
     ↓
   [For Each Function]
     ↓
-    [Show Progress: .]
-    ↓
-    [Stage 1: Detect Complexity] ← llama.cpp
-    ↓
-    [If Quadratic Detected]
+    [For Each Check]
       ↓
-      [Stage 2: Propose Solution] ← llama.cpp
+      [Compute Cache Key] ← (function_hash, check_key)
+      ↓
+      [Check Cache] ← SQLite lookup
+      ↓
+      [If Cache Hit]
+        ↓
+        [Show Progress: 💾 [check_key] function_name]
+        ↓
+        [Use Cached Result]
+      ↓
+      [If Cache Miss]
+        ↓
+        [Show Progress: 🔍 [check_key] function_name]
+        ↓
+        [Stage 1: Detect Issue] ← llama.cpp with check-specific prompt
+        ↓
+        [Parse Detection Response] ← Check for issue keyword
+        ↓
+        [If Issue Detected]
+          ↓
+          [Show Progress: 💡 [check_key] Solution...]
+          ↓
+          [Stage 2: Propose Solution] ← llama.cpp
+        ↓
+        [Store in Cache] ← SQLite with composite key
     ↓
-[Group Results by File]
+[Group Results by File and Function]
     ↓
-[Print Concise Summary]
+[Print Summary] ← Shows all issues per function
     ↓
-[If --details: Print Full Report]
+[If --details: Print Full Report] ← All issues with solutions
     ↓
-[If --output: Save Markdown File]
+[If --output: Save Markdown File] ← Complete report
 ```
 
 ## LLM Prompting Strategy
 
-### Stage 1: Detection Prompt
-- System message defines the task (complexity analysis)
-- Lists common quadratic patterns to look for
-- Requests "QUADRATIC" keyword in response for easy parsing
-- Uses ChatML format (`<|im_start|>` tags)
+### Multi-Check Architecture
+Each check has independent prompts tailored to detect specific issues:
 
-### Stage 2: Solution Prompt
-- Only called if quadratic complexity detected
+#### Detection Prompts (8 checks)
+1. **quadratic**: Detects O(n²) patterns, looks for "QUADRATIC" keyword
+2. **linear-in-loop**: Detects `x in list`, `.remove()`, etc., looks for "LINEAR_IN_LOOP" keyword
+3. **n-plus-one**: Detects repeated I/O/network/model loading, looks for "N_PLUS_ONE" keyword
+4. **expensive-sort-key**: Detects O(n) sort key functions, looks for "EXPENSIVE_SORT_KEY" keyword
+5. **unbounded-alloc**: Detects string concat/array growth in loops, looks for "UNBOUNDED_ALLOC" keyword
+6. **conversion-churn**: Detects repeated tensor/device conversions, looks for "CONVERSION_CHURN" keyword
+7. **ml-footguns**: Detects ML-specific anti-patterns, looks for "ML_FOOTGUN" keyword
+8. **growing-container**: Detects growing while iterating, looks for "GROWING_CONTAINER" keyword
+
+- Each prompt is check-specific with targeted examples
+- Uses ChatML format (`<|im_start|>` tags)
+- Requests specific keyword in response for easy parsing
+
+#### Solution Prompts (8 checks)
+- Only called if issue detected
+- Check-specific solution strategies
 - Requests:
-  1. Explanation of why current code is O(n²)
-  2. Optimization strategy
+  1. Explanation of why the code has this issue
+  2. Optimization strategy specific to this check
   3. Code example of fix
 - More detailed output allowed (higher token budget)
 

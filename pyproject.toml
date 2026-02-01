@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools-rust>=1.5.2", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loopsleuth"
+version = "0.1.0"
+description = "AI-powered Python performance analyzer that detects algorithmic bottlenecks"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "LoopSleuth Contributors"}
+]
+keywords = ["performance", "profiling", "optimization", "static-analysis", "code-quality"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/loopsleuth"
+Repository = "https://github.com/yourusername/loopsleuth"
+
+[project.scripts]
+loopsleuth = "loopsleuth.__main__:main"
+loopsleuth-download-model = "loopsleuth.models:main"
+
+[project.optional-dependencies]
+download = ["huggingface_hub>=0.20.0"]
+
+[tool.setuptools]
+packages = ["loopsleuth"]
+package-dir = {"" = "python"}
+
+[tool.cibuildwheel]
+# Build for CPython 3.8 through 3.12
+build = "cp38-* cp39-* cp310-* cp311-* cp312-*"
+
+# Skip 32-bit builds and musl on Linux
+skip = "*-win32 *-manylinux_i686 *-musllinux_*"
+
+# Install build dependencies
+before-build = "pip install setuptools-rust"
+
+# Test the wheel after building
+test-command = "loopsleuth --help"
+test-requires = []
+
+# Build verbosity
+build-verbosity = 1

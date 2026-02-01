@@ -1,0 +1,20 @@
+# Include the default configuration file
+include loopsleuth.toml
+
+# Include Rust source files
+recursive-include src *.rs
+
+# Include Cargo files
+include Cargo.toml
+include Cargo.lock
+
+# Include documentation
+include README.md
+include LICENSE
+include AGENTS.md
+recursive-include docs *.md
+
+# Exclude test files and build artifacts
+exclude .gitignore
+recursive-exclude target *
+recursive-exclude .git *
