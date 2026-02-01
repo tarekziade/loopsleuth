@@ -50,4 +50,4 @@ jobs:
         run: loopsleuth --help
 
       - name: Test Python import
-        run: python -c "from loopsleuth import __version__, get_binary_path; print(f'Version: {__version__}'); print(f'Binary: {get_binary_path()}')"
+        run: python -c 'from loopsleuth import __version__, get_binary_path; print(f"Version: {__version__}"); print(f"Binary: {get_binary_path()}")'
