@@ -167,14 +167,20 @@ Uses greedy sampling for deterministic results:
 LoopSleuth/
 ├── src/
 │   └── main.rs              # All logic in single file for simplicity
+├── python/                  # Python package
+│   └── loopsleuth/
+│       ├── __init__.py      # Package exports
+│       ├── __main__.py      # CLI entry point
+│       └── models.py        # Model download/management
 ├── test_examples/           # Sample Python files for testing
 │   ├── sample.py           # Mixed complexity functions
 │   └── performance_issues.py # More edge cases
-├── models/                  # GGUF models (not in git)
-├── Cargo.toml              # Dependencies
+├── docs/                    # Documentation
+├── Cargo.toml              # Rust dependencies
+├── pyproject.toml          # Python package metadata
+├── setup.py                # setuptools-rust configuration
 ├── README.md               # User documentation
-├── ARCHITECTURE.md         # This file
-├── setup.sh                # Interactive setup script
+├── AGENTS.md               # Agent quick reference
 └── Makefile                # Convenience commands
 
 ```

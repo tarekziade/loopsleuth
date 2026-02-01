@@ -1,19 +1,24 @@
-.PHONY: help build release test clean run example check
+.PHONY: help build release test clean run example check install
 
 help:
-	@echo "LoopSleuth - Python Quadratic Complexity Detector"
+	@echo "LoopSleuth - Python Performance Analyzer"
 	@echo ""
-	@echo "Available targets:"
+	@echo "Quick Start (Recommended):"
+	@echo "  pip install loopsleuth"
+	@echo "  loopsleuth download-model"
+	@echo "  loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src"
+	@echo ""
+	@echo "Development targets:"
+	@echo "  make install  - Install in development mode"
 	@echo "  make build    - Build debug version"
 	@echo "  make release  - Build optimized release version"
 	@echo "  make test     - Run tests"
 	@echo "  make clean    - Clean build artifacts"
 	@echo "  make check    - Check code without building"
 	@echo "  make example  - Run example analysis (requires model)"
-	@echo "  make setup    - Run setup script"
 
-setup:
-	./setup.sh
+install:
+	pip install -e .
 
 build:
 	cargo build
@@ -31,17 +36,17 @@ clean:
 	cargo clean
 
 example: release
-	@if [ -f "./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf" ]; then \
+	@if [ -f "$(HOME)/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf" ]; then \
+		./target/release/loopsleuth --model $(HOME)/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py; \
+	elif [ -f "./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf" ]; then \
 		./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py; \
+	elif [ -f "$(HOME)/.loopsleuth/models/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then \
+		./target/release/loopsleuth --model $(HOME)/.loopsleuth/models/qwen2.5-3b-instruct-q4_k_m.gguf ./test_examples/sample.py; \
 	elif [ -f "./models/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then \
 		./target/release/loopsleuth --model ./models/qwen2.5-3b-instruct-q4_k_m.gguf ./test_examples/sample.py; \
-	elif [ -f "./models/qwen2.5-0.5b-instruct-q4_k_m.gguf" ]; then \
-		./target/release/loopsleuth --model ./models/qwen2.5-0.5b-instruct-q4_k_m.gguf ./test_examples/sample.py; \
-	elif [ -f "./models/Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf" ]; then \
-		./target/release/loopsleuth --model ./models/Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf ./test_examples/sample.py; \
 	else \
-		echo "No model found in ./models/"; \
-		echo "Run 'make setup' to download a model first"; \
+		echo "No model found in ~/.loopsleuth/models/ or ./models/"; \
+		echo "Run 'loopsleuth download-model' to download a model"; \
 		exit 1; \
 	fi
 

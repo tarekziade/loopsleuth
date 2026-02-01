@@ -2,6 +2,25 @@
 
 A Rust-based CLI tool that analyzes Python code for performance issues using local LLM inference.
 
+## Installation
+
+Get started in 3 commands:
+
+```bash
+# 1. Install LoopSleuth
+pip install loopsleuth
+
+# 2. Download a model interactively
+loopsleuth download-model
+
+# 3. Run analysis!
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
+```
+
+That's it! The `download-model` command will show you available models, download your choice to `~/.loopsleuth/models/`, and show you how to use it.
+
+**Quick Start Guide**: See [docs/QUICKSTART.md](docs/QUICKSTART.md) for a complete walkthrough.
+
 ## Features
 
 - **Fully Configurable**: Define checks, customize prompts, and set defaults via TOML configuration file
@@ -83,12 +102,12 @@ Fix this: {function_source}
 
 ```bash
 # Print default config to create your own
-./target/release/loopsleuth --print-default-config > my-loopsleuth.toml
+loopsleuth --print-default-config > my-loopsleuth.toml
 
 # Edit my-loopsleuth.toml to customize checks or add new ones
 
 # Use your custom config
-./target/release/loopsleuth --config my-loopsleuth.toml -m model.gguf ./src
+loopsleuth --config my-loopsleuth.toml -m ~/.loopsleuth/models/qwen*.gguf ./src
 
 # Or place it in ~/.config/loopsleuth/loopsleuth.toml for automatic loading
 mkdir -p ~/.config/loopsleuth
@@ -99,7 +118,7 @@ cp my-loopsleuth.toml ~/.config/loopsleuth/loopsleuth.toml
 
 1. Get the default configuration:
    ```bash
-   ./target/release/loopsleuth --print-default-config > ~/.config/loopsleuth/loopsleuth.toml
+   loopsleuth --print-default-config > ~/.config/loopsleuth/loopsleuth.toml
    ```
 
 2. Add a new check section:
@@ -116,126 +135,12 @@ cp my-loopsleuth.toml ~/.config/loopsleuth/loopsleuth.toml
 
 3. Run with your custom check:
    ```bash
-   ./target/release/loopsleuth -m model.gguf ./src --checks database-in-loop
+   loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --checks database-in-loop
    ```
 
-## Prerequisites
+## Model Management
 
-1. **Rust toolchain** - Install from [rustup.rs](https://rustup.rs/)
-
-2. **CMake** - Required for building llama.cpp:
-   ```bash
-   # macOS
-   brew install cmake
-
-   # Ubuntu/Debian
-   sudo apt-get install cmake
-
-   # Windows
-   # Download from https://cmake.org/download/
-   ```
-
-3. **Hugging Face CLI** - For downloading models:
-   ```bash
-   # Standalone installer (recommended)
-   curl -LsSf https://hf.co/cli/install.sh | bash
-
-   # Or with pip
-   pip install -U huggingface_hub
-
-   # Or with homebrew
-   brew install huggingface-cli
-   ```
-
-4. **GGUF Model** - Choose one of these recommended models:
-
-   **Qwen2.5-Coder-3B (Recommended) - Optimized for code analysis:**
-   ```bash
-   hf download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF \
-     qwen2.5-coder-3b-instruct-q4_k_m.gguf \
-     --local-dir ./models
-   ```
-
-   **Devstral Small 2 (24B) - Best accuracy, larger model:**
-   ```bash
-   hf download unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF \
-     Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf \
-     --local-dir ./models
-   ```
-
-   **Qwen2.5 (3B) - General purpose:**
-   ```bash
-   hf download Qwen/Qwen2.5-3B-Instruct-GGUF \
-     qwen2.5-3b-instruct-q4_k_m.gguf \
-     --local-dir ./models
-   ```
-
-   **Qwen2.5 (0.5B) - Fast, smaller model:**
-   ```bash
-   hf download Qwen/Qwen2.5-0.5B-Instruct-GGUF \
-     qwen2.5-0.5b-instruct-q4_k_m.gguf \
-     --local-dir ./models
-   ```
-
-## Installation
-
-### Option 1: Install via pip (Easiest - Recommended) 🎉
-
-Complete setup in 3 commands:
-
-```bash
-# 1. Install LoopSleuth
-pip install git+https://github.com/yourusername/loopsleuth.git
-
-# 2. Download a model interactively
-loopsleuth download-model
-
-# 3. Run analysis!
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
-```
-
-That's it! The `download-model` command will:
-- Show you available models with descriptions
-- Download your choice to `~/.loopsleuth/models/`
-- Show you how to use it
-
-**Note**: This method requires the Rust toolchain to be installed. See the [Prerequisites](#prerequisites) section.
-
-**Quick Start Guide**: See [docs/QUICKSTART.md](docs/QUICKSTART.md) for a complete walkthrough.
-
-For detailed pip installation instructions, CI/CD integration, and troubleshooting, see [docs/PYTHON_INSTALL.md](docs/PYTHON_INSTALL.md).
-
-### Option 2: Quick Setup (Standalone CLI)
-
-```bash
-./setup.sh
-```
-
-The setup script will:
-- Check prerequisites (Rust, CMake)
-- Let you choose and download a model
-- Build the project
-
-### Manual Installation
-
-```bash
-# Build the project
-cargo build --release
-
-# Download a model manually
-mkdir -p models
-# Then download from Hugging Face (see Prerequisites section)
-```
-
-**Note**: The first build will take several minutes as it compiles llama.cpp from source. Subsequent builds are much faster.
-
-The binary will be available at `target/release/loopsleuth`
-
-## Usage
-
-### Model Management (pip install only)
-
-If you installed via pip, use these commands to manage models:
+After installation, use these commands to manage models:
 
 ```bash
 # Download a model interactively
@@ -248,24 +153,57 @@ loopsleuth list-models
 loopsleuth download
 ```
 
+**Recommended models**:
+- **Qwen2.5-Coder (3B)** ⭐ - Best for code analysis (~2GB)
+- **Devstral Small 2 (24B)** - Highest accuracy, requires more RAM (~15GB)
+- **Qwen2.5 (3B)** - General purpose, good balance (~2GB)
+- **Qwen2.5 (0.5B)** - Very fast, lower accuracy (~400MB)
+
+The interactive download command will guide you through selecting and downloading the best model for your needs.
+
+## Building from Source
+
+For development or if you prefer to build from source:
+
+**Prerequisites:**
+- Rust toolchain from [rustup.rs](https://rustup.rs/)
+- CMake (`brew install cmake` on macOS, `apt-get install cmake` on Linux)
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/loopsleuth.git
+cd loopsleuth
+
+# Build the project
+cargo build --release
+
+# Download a model
+mkdir -p models
+pip install huggingface_hub
+hf download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF \
+  qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+  --local-dir ./models
+
+# Run
+./target/release/loopsleuth -m ./models/qwen*.gguf ./src
+```
+
+**Note**: The first build takes several minutes as it compiles llama.cpp from source. Subsequent builds are much faster.
+
+For detailed build instructions and troubleshooting, see [docs/PYTHON_INSTALL.md](docs/PYTHON_INSTALL.md)
+
+## Usage
+
 ### Basic Usage
 
 Analyze a single Python file (runs all checks by default):
 ```bash
-# If installed via pip
 loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf example.py
-
-# If built from source
-./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf example.py
 ```
 
 Analyze an entire directory (recursive):
 ```bash
-# If installed via pip
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
-
-# If built from source
-./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./src
 ```
 
 The tool automatically finds all `.py` files in subdirectories and groups results by file.
@@ -274,17 +212,17 @@ The tool automatically finds all `.py` files in subdirectories and groups result
 
 List all available checks:
 ```bash
-./target/release/loopsleuth --list-checks
+loopsleuth --list-checks
 ```
 
 Run specific checks only:
 ```bash
-./target/release/loopsleuth -m model.gguf ./src --checks quadratic,linear-in-loop
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --checks quadratic,linear-in-loop
 ```
 
 Run all checks except specific ones:
 ```bash
-./target/release/loopsleuth -m model.gguf ./src --exclude conversion-churn,ml-footguns
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,ml-footguns
 ```
 
 **Note**: By default, all 8 checks are run. Use `--checks` to select specific checks or `--exclude` to skip certain checks.
@@ -330,32 +268,31 @@ Run all checks except specific ones:
 
 ```bash
 # List all available checks
-cargo run --release -- --list-checks
+loopsleuth --list-checks
 
 # Print default configuration
-cargo run --release -- --print-default-config > my-loopsleuth.toml
+loopsleuth --print-default-config > my-loopsleuth.toml
 
 # Run with custom configuration
-cargo run --release -- --config my-loopsleuth.toml ./test_examples/sample.py
+loopsleuth --config my-loopsleuth.toml -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py
 
 # Run all checks (default)
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py
 
 # Run specific checks only
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py --checks quadratic,linear-in-loop
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --checks quadratic,linear-in-loop
 
 # Run all except ML-specific checks
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py --exclude conversion-churn,ml-footguns
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --exclude conversion-churn,ml-footguns
 
 # Full analysis in terminal
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py --details
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --details
 
 # Save detailed report to file
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples/sample.py --output report.md
-
-# Or use make
-make example
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --output report.md
 ```
+
+**For developers**: If you're building from source, use `cargo run --release --` instead of `loopsleuth`, or use `make example`.
 
 ## Output Format
 
@@ -517,12 +454,12 @@ The intelligent caching system provides significant benefits:
 
 **Solution**: Increase context size to accommodate larger functions
 ```bash
-./target/release/loopsleuth --context-size 8192 -m model.gguf ./code
+loopsleuth --context-size 8192 -m ~/.loopsleuth/models/qwen*.gguf ./code
 ```
 
 Or skip analyzing extremely large functions:
 ```bash
-./target/release/loopsleuth --skip-large 300 -m model.gguf ./code
+loopsleuth --skip-large 300 -m ~/.loopsleuth/models/qwen*.gguf ./code
 ```
 
 ### Slow Analysis

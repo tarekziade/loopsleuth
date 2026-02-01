@@ -2,7 +2,7 @@
 
 ## Overview
 
-The bootstrap feature integrates model downloading directly into the Python package, eliminating the need for separate setup scripts. Users can now install LoopSleuth via pip and immediately download models interactively.
+The bootstrap feature integrates model downloading directly into the Python package, providing a seamless installation experience. Users install LoopSleuth via pip and download models interactively through the CLI.
 
 ## Implementation
 
@@ -49,21 +49,23 @@ export LOOPSLEUTH_MODELS_DIR=/path/to/models
 
 ## User Workflow
 
-### Before (setup.sh)
-
-```bash
-git clone repo
-cd repo
-./setup.sh  # Checks prerequisites, downloads model, builds
-./target/release/loopsleuth -m models/model.gguf ./src
-```
-
-### After (pip + bootstrap)
+### Standard Installation (Current)
 
 ```bash
 pip install loopsleuth
 loopsleuth download-model  # Interactive model selection
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
+```
+
+### Development/Source Build (Advanced)
+
+```bash
+git clone repo
+cd repo
+pip install -e .  # Installs in development mode
+loopsleuth download-model
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
+# Or: ./target/release/loopsleuth -m models/model.gguf ./src
 ```
 
 ## Features
@@ -250,10 +252,10 @@ def main():
 
 ## Backwards Compatibility
 
-- `setup.sh` still works for source builds
-- Both workflows coexist:
-  - Source build: Uses `models/` in project directory
-  - Pip install: Uses `~/.loopsleuth/models/`
+- Source builds still supported via `pip install -e .`
+- Both model locations work:
+  - Standard: `~/.loopsleuth/models/` (recommended)
+  - Legacy: `models/` in project directory (for source builds)
 - No breaking changes to existing functionality
 
 ## Testing
@@ -302,21 +304,22 @@ This creates a virtual environment, installs LoopSleuth, and verifies all comman
 7. **Non-interactive mode**: `--model-choice 1` for automation
 8. **Configuration storage**: Remember user's preferred model
 
-## Migration from setup.sh
+## Migration from Source Builds
 
-For users who were using `setup.sh`:
+For users who were building from source:
 
 ```bash
-# Old workflow
-./setup.sh
+# Old workflow (source build)
+git clone repo && cd repo
+cargo build --release
 ./target/release/loopsleuth -m models/qwen*.gguf ./src
 
-# Migrate to new workflow
-pip install -e .
+# New workflow (pip install)
+pip install loopsleuth
 loopsleuth download-model  # Downloads to ~/.loopsleuth/models/
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
 
-# Optional: Move existing models
+# Optional: Move existing models to standard location
 mkdir -p ~/.loopsleuth/models
 mv models/*.gguf ~/.loopsleuth/models/
 ```
@@ -338,7 +341,7 @@ mv models/*.gguf ~/.loopsleuth/models/
 
 ## Summary
 
-The bootstrap feature transforms LoopSleuth from a "build from source" tool into a fully pip-installable package with guided setup. Users can now go from zero to analyzing code in three simple commands:
+The bootstrap feature makes LoopSleuth a fully pip-installable package with guided setup, providing a standard Python package experience. Users can go from zero to analyzing code in three simple commands:
 
 ```bash
 pip install loopsleuth
@@ -346,4 +349,4 @@ loopsleuth download-model
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
 ```
 
-This dramatically improves the user experience and makes LoopSleuth more accessible to Python developers who expect standard `pip install` workflows.
+This approach dramatically improves the user experience and makes LoopSleuth accessible to all Python developers who expect standard `pip install` workflows.

@@ -36,36 +36,42 @@ When working on this project, refer to these documents for detailed information:
 
 ## Quick Start for Agents
 
-### For Development (Building from Source)
+### For Users (Standard Installation)
 
 ```bash
-# Build
-cargo build --release
-
-# Run
-./target/release/loopsleuth --model <model.gguf> <python_file_or_directory>
-
-# Test
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
-```
-
-### For Testing Pip Package
-
-```bash
-# Install in development mode
-pip install -e .
+# Install from PyPI
+pip install loopsleuth
 
 # Download a model
 loopsleuth download-model
-
-# List models
-loopsleuth list-models
 
 # Run analysis
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples
 
 # With details
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples --details
+```
+
+### For Development (Building from Source)
+
+```bash
+# Install in development mode
+pip install -e .
+
+# Build the Rust binary
+cargo build --release
+
+# Download a model
+loopsleuth download-model
+
+# Run via pip entry point
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples
+
+# Or run directly from target
+./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
+
+# Test
+cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
 ```
 
 ## Architecture
@@ -143,14 +149,13 @@ LoopSleuth/
 ├── README.md                # User documentation
 ├── AGENTS.md                # This file (agent quick reference)
 ├── LICENSE                  # MIT license
-├── setup.sh                 # Interactive setup (legacy)
 ├── Makefile                 # Build commands
 └── .gitignore
 
 Not in git:
 ├── .loopsleuth_cache/       # SQLite cache database
-├── ~/.loopsleuth/models/    # GGUF model files (~2-15GB) [pip install]
-├── models/                  # GGUF model files [source build]
+├── ~/.loopsleuth/models/    # GGUF model files (~2-15GB) [standard location]
+├── models/                  # GGUF model files [legacy source build location]
 ├── target/                  # Rust build artifacts
 ├── build/                   # Python build artifacts
 ├── dist/                    # Python distribution packages

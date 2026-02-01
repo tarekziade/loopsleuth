@@ -4,19 +4,19 @@ Get started with LoopSleuth in 3 simple steps!
 
 ## Step 1: Install LoopSleuth
 
-### Option A: Install from PyPI (Recommended - Coming Soon)
+### Recommended: Install from PyPI
 
 ```bash
 pip install loopsleuth
 ```
 
-### Option B: Install from GitHub
+### Alternative: Install from GitHub
 
 ```bash
 pip install git+https://github.com/yourusername/loopsleuth.git
 ```
 
-### Option C: Install from Source
+### For Developers: Install from Source
 
 ```bash
 git clone https://github.com/yourusername/loopsleuth.git
