@@ -167,7 +167,25 @@ struct ChecksConfig {
 impl CheckConfig {
     /// Generate detection prompt by substituting function source
     fn format_detection_prompt(&self, func: &FunctionInfo) -> String {
-        self.detection_prompt.replace("{function_source}", &func.source)
+        let mut prompt = self.detection_prompt.replace("{function_source}", &func.source);
+
+        // Add special context for __init__ methods to reduce false positives
+        if func.name == "__init__" {
+            let context = "\n\nIMPORTANT: This is an __init__ (constructor) method that initializes object state. \
+                          Constructor methods typically run once per object and should NOT be flagged unless they \
+                          have genuine algorithmic complexity issues (like nested loops over input data). \
+                          Simple attribute assignments and one-time setup calls are NOT performance issues.\n";
+
+            // Insert the context before the final assistant prompt marker
+            if let Some(pos) = prompt.rfind("<|im_start|>assistant") {
+                prompt.insert_str(pos, context);
+            } else {
+                // Fallback: append at the end
+                prompt.push_str(context);
+            }
+        }
+
+        prompt
     }
 
     /// Generate solution prompt by substituting function source
@@ -176,8 +194,16 @@ impl CheckConfig {
     }
 
     /// Check if the LLM response indicates an issue
+    /// Only checks the first line to avoid false positives from explanatory text
     fn detect_issue(&self, response: &str) -> bool {
-        response.to_uppercase().contains(&self.keyword.to_uppercase())
+        // Get the first non-empty line
+        let first_line = response
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("");
+
+        // Check if the keyword appears in the first line
+        first_line.to_uppercase().contains(&self.keyword.to_uppercase())
     }
 }
 
@@ -878,7 +904,10 @@ fn main() -> Result<()> {
                 }
             }
 
-            if has_any_issue {
+            // Only count as having issues if we actually added results with issues
+            // (not just detected issues that were later rejected due to invalid diffs)
+            let actually_has_issues = check_results.iter().any(|r| r.has_issue);
+            if actually_has_issues {
                 functions_with_issues += 1;
             }
 
