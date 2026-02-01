@@ -293,14 +293,22 @@ keyword = "UNBOUNDED_ALLOC"
 detection_prompt = """<|im_start|>system
 You are a code complexity analyzer. Analyze Python functions for unbounded memory allocations in loops.
 
-Look for these patterns in loops:
-- String concatenation with += (creates new string each iteration)
-- Repeated list/array concatenation
-- `torch.cat()` or `np.concatenate()` in loops (reallocates memory)
-- Growing strings/buffers without pre-allocation
+ONLY flag these TRUE unbounded allocation patterns:
+- String concatenation with += in loops (e.g., `result += str` creates new string each iteration)
+- Repeated list/array concatenation (e.g., `result = result + [item]`)
+- `torch.cat()` or `np.concatenate()` repeatedly called in loops
+- Growing strings/buffers that could be pre-allocated
 
-Respond with "UNBOUNDED_ALLOC" if you detect unbounded allocations in loops, followed by a brief explanation.
-Respond with "OK" if memory usage is bounded or pre-allocated.<|im_end|>
+DO NOT flag these (they are SAFE):
+- Bounded loops like `for i in range(n):` - if n is fixed, it's bounded
+- Appending to a list in a bounded loop (e.g., `list.append(x)` in `for i in range(10):`)
+- Counter increments (e.g., `count += 1` - this is an integer, not memory allocation)
+- Fixed-size iteration where the number of iterations is determined by input size
+
+The key question: Does the MEMORY ALLOCATION grow without bounds, or is it proportional to a known input size?
+
+Respond with "UNBOUNDED_ALLOC" ONLY if memory grows without clear bounds.
+Respond with "OK" if allocations are bounded by input size or pre-allocated.<|im_end|>
 <|im_start|>user
 Analyze this Python function for unbounded allocations:
 
@@ -308,7 +316,7 @@ Analyze this Python function for unbounded allocations:
 {function_source}
 ```
 
-Does this function have unbounded memory allocations in loops?<|im_end|>
+Does this function have TRUE unbounded memory allocations in loops?<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
@@ -470,24 +478,31 @@ description = "Detects loops that grow containers while iterating"
 category = "performance"
 keyword = "GROWING_CONTAINER"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for patterns where containers grow while being iterated.
+You are a code complexity analyzer. Find the SPECIFIC pattern where a loop iterates over a container AND that SAME container grows inside the loop.
 
-Look for these patterns:
-- Iterating over a list while appending to it
-- Using `for item in list:` and then `list.append()`
-- Growing collections during iteration without bounds
-- Modifying the collection being iterated
+DANGEROUS pattern to find:
+```python
+for item in my_list:      # Iterating over my_list
+    my_list.append(...)   # Growing THE SAME my_list - DANGEROUS!
+```
 
-Respond with "GROWING_CONTAINER" if you detect unbounded growth during iteration, followed by a brief explanation.
-Respond with "OK" if iteration is safe.<|im_end|>
+The variable name after "for item in" MUST match the variable name before ".append()".
+
+SAFE patterns (respond with OK):
+- `for x in list_a:` with `list_b.append()` - Different variables, SAFE
+- `for x in items:` with `items[x] = val` - Modifying elements, not growing, SAFE
+- `for x in items:` with no append/extend - SAFE
+
+IMPORTANT: Be precise with variable names. Look at the actual variable being iterated vs the variable being modified.
+
+If you find THE SAME variable in `for x in VAR` and `VAR.append/extend`, respond with "GROWING_CONTAINER".
+Otherwise, respond with "OK".<|im_end|>
 <|im_start|>user
-Analyze this Python function for growing containers:
-
 ```python
 {function_source}
 ```
 
-Does this function grow containers while iterating over them?<|im_end|>
+Check: does any loop iterate over variable X and then modify THE SAME variable X with append/extend?<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system

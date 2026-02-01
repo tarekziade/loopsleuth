@@ -202,3 +202,78 @@ def conditional_early_exit(matrix):
             if val == 0:
                 return (i, j)  # Early exit on first zero
     return None
+
+
+# ============================================================================
+# Bug Fix #3: False positives for unbounded-alloc and growing-container
+# Examples from molotov/runner.py that were incorrectly flagged
+# ============================================================================
+
+
+def launch_processes_pattern(args, procs):
+    """Should NOT be flagged: Bounded loop, different lists being modified
+
+    This pattern was incorrectly flagged for:
+    1. unbounded-alloc: Loop is bounded by args.processes
+    2. growing-container: Iterates over 'jobs' while modifying 'procs' (different lists)
+    """
+    jobs = []
+
+    # Bounded loop - exactly args.processes iterations
+    for _i in range(args.processes):
+        job = {"id": _i}
+        jobs.append(job)  # Growing 'jobs' in bounded loop - SAFE
+
+    # Add jobs to procs list
+    for job in jobs:
+        procs.append(job)  # Iterating 'jobs', modifying 'procs' - SAFE
+
+    # Monitoring loop - iterates 'jobs', modifies 'procs'
+    while len(procs) > 0:
+        for job in jobs:  # Iterating over 'jobs'
+            if job.get("done") and job in procs:
+                procs.remove(job)  # Modifying 'procs' (different list) - SAFE
+
+    return procs
+
+
+def shutdown_processes(procs):
+    """Should NOT be flagged: Simple iteration without modification
+
+    This was incorrectly flagged for growing-container.
+    It only reads from procs, doesn't modify it.
+    """
+    # Just iterating and calling a method - no modification of the list
+    for proc in procs:
+        proc.terminate()
+
+
+def process_with_counter(items, results):
+    """Should NOT be flagged: Counter increment is not memory allocation
+
+    This pattern was incorrectly flagged for unbounded-alloc.
+    Incrementing an integer counter is not memory allocation.
+    """
+    for item in items:
+        helper_process_item(item)
+        results["PROCESS"] += 1  # Incrementing counter - SAFE
+
+    return results
+
+
+def iterate_and_modify_different_lists(source_jobs, target_procs):
+    """Should NOT be flagged: Iterating one list, modifying another
+
+    This is the key pattern that was causing false positives:
+    - Iterating over 'source_jobs'
+    - Modifying 'target_procs'
+    These are different lists, so it's completely safe.
+    """
+    for job in source_jobs:  # Iterating source_jobs
+        if job.is_ready():
+            target_procs.append(job)  # Modifying target_procs - SAFE
+
+
+def helper_process_item(item):
+    """Helper function for examples"""
+    return item * 2

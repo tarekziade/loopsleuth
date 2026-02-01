@@ -29,8 +29,8 @@ echo "   Binary: $BINARY"
 echo "   Model: $MODEL"
 echo ""
 
-# Test 1: Regression tests should have 0 issues
-echo "📋 Test 1: False positive prevention (regression_tests.py)"
+# Test 1: Regression tests should have 0 issues (quadratic check)
+echo "📋 Test 1: False positive prevention - quadratic check"
 echo "   Expected: 0 functions with issues"
 
 OUTPUT=$("$BINARY" "$PROJECT_DIR/test_examples/regression_tests.py" \
@@ -90,6 +90,28 @@ INIT_COUNT=$(grep -c "def __init__" "$PROJECT_DIR/test_examples/regression_tests
 # All __init__ methods should be in cache with no issues
 # If the test passes, all functions should be clean (tested in Test 1)
 echo "   ✅ PASS: $INIT_COUNT __init__ methods analyzed without false positives"
+
+echo ""
+
+# Test 4: unbounded-alloc and growing-container checks
+echo "📋 Test 4: unbounded-alloc and growing-container false positive prevention"
+echo "   Expected: 0 issues on regression_tests.py"
+
+OUTPUT=$("$BINARY" "$PROJECT_DIR/test_examples/regression_tests.py" \
+    -m "$MODEL" \
+    --checks unbounded-alloc,growing-container 2>&1)
+
+ISSUES=$(echo "$OUTPUT" | grep "Functions with issues:" | awk '{print $5}')
+
+if [ "$ISSUES" = "0" ]; then
+    echo "   ✅ PASS: Found $ISSUES issues (expected 0)"
+else
+    echo "   ❌ FAIL: Found $ISSUES issues (expected 0)"
+    echo ""
+    echo "Output:"
+    echo "$OUTPUT"
+    exit 1
+fi
 
 echo ""
 echo "✅ All regression tests passed!"
