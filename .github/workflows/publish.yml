@@ -89,8 +89,37 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  publish-testpypi:
+    name: Publish to Test PyPI
+    if: github.event_name == 'workflow_dispatch' && inputs.test_pypi
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: test-pypi
+      url: https://test.pypi.org/p/loopsleuth
+    permissions:
+      id-token: write  # Required for trusted publishing
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-tmp
+
+      - name: Flatten dist directory
+        run: |
+          mkdir -p dist
+          find dist-tmp -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec mv {} dist/ \;
+          ls -lh dist/
+
+      - name: Publish to Test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
   publish:
     name: Publish to PyPI
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.test_pypi)
     needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment:
@@ -111,12 +140,5 @@ jobs:
           find dist-tmp -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec mv {} dist/ \;
           ls -lh dist/
 
-      - name: Publish to Test PyPI
-        if: github.event_name == 'workflow_dispatch' && inputs.test_pypi
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
       - name: Publish to PyPI
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.test_pypi)
         uses: pypa/gh-action-pypi-publish@release/v1
