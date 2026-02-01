@@ -760,6 +760,8 @@ fn main() -> Result<()> {
             let filename = file_path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
+
+            // TODO: if the function is in a class, we want to display the class name here
             let func_display = format!("{}::{}", filename, func.name);
 
             // Skip large functions if requested
