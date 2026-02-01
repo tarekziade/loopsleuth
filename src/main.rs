@@ -827,6 +827,23 @@ fn main() -> Result<()> {
                                 total_stats.add(&stats);
                             }
 
+                            // Validate the diff before accepting the finding
+                            let is_valid_diff = solution.as_ref()
+                                .map(|sol| validate_diff(sol, &func.source))
+                                .unwrap_or(false);
+
+                            if !is_valid_diff {
+                                // Invalid diff detected - skip this finding
+                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] Invalid diff",
+                                       progress_bar, progress_pct, current_func_num, total_functions_count,
+                                       functions_with_issues, check.key);
+                                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                                // Store as no issue in cache since the solution was invalid
+                                let _ = cache.put(&func, &check.key, false, "Invalid diff - likely false positive", None);
+                                continue; // Skip to next check
+                            }
+
                             // Store in cache
                             let _ = cache.put(&func, &check.key, true, &analysis, solution.as_deref());
 
@@ -1119,6 +1136,110 @@ fn fix_truncated_markdown(text: &str) -> String {
     result.push_str("\n\n*[Output truncated - increase --max-tokens for complete solution]*");
 
     result
+}
+
+/// Validate that a diff actually contains meaningful changes
+/// Returns true if the diff is valid (has real changes), false if it's broken
+fn validate_diff(solution: &str, original_code: &str) -> bool {
+    // Extract diff block from solution
+    let diff_start = solution.find("```diff");
+    if diff_start.is_none() {
+        // No diff found - could be a text explanation saying no optimization possible
+        // If solution contains phrases indicating no optimization, consider it valid
+        let no_opt_phrases = [
+            "no optimization possible",
+            "cannot be optimized",
+            "already optimal",
+            "necessary operations",
+        ];
+        if no_opt_phrases.iter().any(|phrase| solution.to_lowercase().contains(phrase)) {
+            return true; // Valid explanation that no fix is possible
+        }
+        return false; // No diff and no explanation - invalid
+    }
+
+    let diff_start = diff_start.unwrap() + 7; // Skip "```diff\n"
+    let diff_end = solution[diff_start..].find("```").unwrap_or(solution.len() - diff_start);
+    let diff_text = &solution[diff_start..diff_start + diff_end];
+
+    // Parse the diff to extract added and removed lines
+    let mut removed_lines = Vec::new();
+    let mut added_lines = Vec::new();
+
+    for line in diff_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+            // Remove the leading '-' and any whitespace
+            let content = trimmed[1..].trim();
+            if !content.is_empty() && !content.starts_with("--") {
+                removed_lines.push(content);
+            }
+        } else if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+            // Remove the leading '+' and any whitespace
+            let content = trimmed[1..].trim();
+            if !content.is_empty() && !content.starts_with("++") {
+                added_lines.push(content);
+            }
+        }
+    }
+
+    // Check 1: Must have at least some changes
+    if removed_lines.is_empty() && added_lines.is_empty() {
+        return false;
+    }
+
+    // Check 2: If we have both additions and removals, they shouldn't all be identical
+    if !removed_lines.is_empty() && !added_lines.is_empty() {
+        // Compare the lines - if every removed line has an identical added line, it's broken
+        let mut all_identical = true;
+        for removed in &removed_lines {
+            if !added_lines.iter().any(|added| {
+                // Normalize whitespace for comparison
+                normalize_code_line(removed) == normalize_code_line(added)
+            }) {
+                all_identical = false;
+                break;
+            }
+        }
+
+        if all_identical && removed_lines.len() == added_lines.len() {
+            return false; // All lines are identical - broken diff
+        }
+    }
+
+    // Check 3: Verify removed lines actually exist in original code
+    // This catches hallucinated diffs
+    if !removed_lines.is_empty() {
+        let original_normalized: Vec<String> = original_code
+            .lines()
+            .map(|l| normalize_code_line(l.trim()))
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let mut found_count = 0;
+        for removed in &removed_lines {
+            let normalized_removed = normalize_code_line(removed);
+            if original_normalized.iter().any(|orig| orig.contains(&normalized_removed) || normalized_removed.contains(orig)) {
+                found_count += 1;
+            }
+        }
+
+        // At least 50% of removed lines should exist in original code
+        // (allowing some flexibility for partial matches)
+        if found_count == 0 && removed_lines.len() > 0 {
+            return false; // None of the removed lines exist - hallucinated diff
+        }
+    }
+
+    true // Diff looks valid
+}
+
+/// Normalize a code line for comparison (remove extra whitespace, comments)
+fn normalize_code_line(line: &str) -> String {
+    line.split('#').next().unwrap_or("")  // Remove comments
+        .replace(" ", "")                  // Remove all whitespace
+        .replace("\t", "")
+        .to_lowercase()
 }
 
 fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, functions_with_issues: usize, checks: &[CheckConfig], cache: &AnalysisCache, no_cache: bool, stats: &TokenStats) {

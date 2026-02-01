@@ -151,17 +151,27 @@ description = "Detects repeated expensive operations in loops (file I/O, network
 category = "performance"
 keyword = "N_PLUS_ONE"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for N+1 patterns where expensive operations are repeated in loops.
+You are a code complexity analyzer. Analyze Python functions for N+1 patterns where expensive operations that COULD be batched or moved outside the loop are instead repeated unnecessarily.
 
-Look for these patterns inside loops:
-- File I/O operations (open, read, write)
-- Network requests (HTTP calls, API requests)
-- Database queries
-- Model loading or initialization
-- Resource loading (images, data files)
+ONLY flag as N+1 if the operation could be optimized by:
+- Batching multiple requests into one (e.g., loading multiple files/records at once)
+- Moving the operation outside the loop (e.g., loading a model once before the loop)
+- Caching results that are repeatedly computed
 
-Respond with "N_PLUS_ONE" if you detect repeated expensive operations in loops, followed by a brief explanation.
-Respond with "OK" if no such patterns exist.<|im_end|>
+DO NOT flag these as N+1 (these are NECESSARY loop operations):
+- Iterating over items to process each one (e.g., closing multiple sessions/connections)
+- Async operations on different items (await on each item's operation)
+- Operations that MUST be done per-item by design
+
+Look for TRUE N+1 patterns inside loops:
+- Opening the SAME file repeatedly (instead of once)
+- Making separate network requests that could be batched
+- Separate database queries that could be a single query with WHERE IN
+- Loading the same model/resource multiple times
+- Repeated expensive computations with identical inputs
+
+Respond with "N_PLUS_ONE" ONLY if the expensive operation could clearly be batched or moved outside the loop.
+Respond with "OK" if the loop operations are necessary or already optimal.<|im_end|>
 <|im_start|>user
 Analyze this Python function for N+1 patterns:
 
@@ -169,38 +179,49 @@ Analyze this Python function for N+1 patterns:
 {function_source}
 ```
 
-Does this function repeat expensive operations in loops?<|im_end|>
+Does this function have TRUE N+1 patterns where operations could be batched or moved outside the loop?<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix repeated expensive operations in loops.
+You are an expert Python performance optimization consultant. Provide solutions to fix N+1 problems by batching or moving operations outside loops.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+IMPORTANT: You MUST provide a unified diff that shows ACTUAL CHANGES to the code, not identical lines.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
+Example of a CORRECT diff (showing real changes):
 ```diff
 --- original
 +++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
+@@ -5,8 +5,10 @@
+ def process_users(user_ids):
++    # Load all users at once (batching)
++    users = db.get_users(user_ids)  # Single query
++
+     for user_id in user_ids:
+-        user = db.get_user(user_id)  # N+1: separate query per user
++        user = users[user_id]  # Use pre-loaded data
+         process(user)
 ```
 
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+WRONG diff (identical lines - DO NOT DO THIS):
+```diff
+-        user = db.get_user(user_id)
++        user = db.get_user(user_id)
+```
+
+Output format:
+1. Issue Explanation: What expensive operation is being repeated?
+2. Optimization Strategy: How to batch/move/cache it?
+3. Unified Diff: Show the ACTUAL code changes with lines that are DIFFERENT
+
+The diff MUST show real changes - lines with - and + should be DIFFERENT code, not the same.<|im_end|>
 <|im_start|>user
-This Python function has repeated expensive operations in loops:
+This Python function has N+1 problem with repeated expensive operations:
 
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+Provide a solution as a unified diff with REAL changes (not identical before/after lines).<|im_end|>
 <|im_start|>assistant
 """
 

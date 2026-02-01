@@ -9,32 +9,46 @@ from typing import Optional
 # Model definitions
 MODELS = {
     "1": {
-        "name": "Qwen2.5-Coder (3B) - Recommended ⭐",
-        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-        "filename": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
-        "size": "~2GB",
+        "name": "Qwen2.5-Coder (7B) - Recommended ⭐",
+        "repo": "unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF",
+        "filename": "Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf",
+        "size": "~4.7GB",
         "description": "Best for code analysis, excellent accuracy",
     },
     "2": {
+        "name": "Qwen2.5-Coder (3B)",
+        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "filename": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+        "size": "~2GB",
+        "description": "Faster but less accurate (not recommended for n-plus-one check)",
+    },
+    "3": {
         "name": "Devstral Small 2 (24B)",
         "repo": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
         "filename": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
         "size": "~15GB",
         "description": "Highest accuracy, requires more RAM",
     },
-    "3": {
+    "4": {
         "name": "Qwen2.5 (3B)",
         "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
         "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
         "size": "~2GB",
         "description": "General purpose, good balance",
     },
-    "4": {
+    "5": {
         "name": "Qwen2.5 (0.5B)",
         "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
         "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "size": "~400MB",
         "description": "Very fast, lower accuracy",
+    },
+    "6": {
+        "name": "Custom model (provide Hugging Face URL)",
+        "repo": "custom",
+        "filename": "",
+        "size": "varies",
+        "description": "Download from a custom Hugging Face repository",
     },
 }
 
@@ -92,7 +106,7 @@ def download_model(choice: str, models_dir: Path) -> Optional[Path]:
     """Download the selected model using huggingface_hub.
 
     Args:
-        choice: User's choice (1-4)
+        choice: User's choice (1-6)
         models_dir: Directory to download to
 
     Returns:
@@ -103,6 +117,25 @@ def download_model(choice: str, models_dir: Path) -> Optional[Path]:
         return None
 
     model = MODELS[choice]
+
+    # Handle custom model input
+    if model['repo'] == 'custom':
+        print("\nEnter custom model details:")
+        repo = input("  Hugging Face repository (e.g., user/model-name): ").strip()
+        if not repo:
+            print("❌ Repository required")
+            return None
+        filename = input("  Filename (e.g., model-q4_k_m.gguf): ").strip()
+        if not filename:
+            print("❌ Filename required")
+            return None
+
+        model = {
+            'name': f'Custom: {repo}',
+            'repo': repo,
+            'filename': filename,
+            'size': 'unknown',
+        }
 
     try:
         from huggingface_hub import hf_hub_download
@@ -165,7 +198,7 @@ def interactive_download() -> Optional[Path]:
 
     # Get user choice
     try:
-        choice = input("Enter choice (1-4, 0 to exit) [1]: ").strip()
+        choice = input("Enter choice (1-6, 0 to exit) [1]: ").strip()
         if not choice:
             choice = "1"  # Default to recommended model
 
