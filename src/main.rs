@@ -865,6 +865,7 @@ fn main() -> Result<()> {
                                        functions_with_issues, check.key);
                                 std::io::Write::flush(&mut std::io::stdout()).ok();
 
+                                // TODO: we still want to report it and say we don't have a solution 
                                 // Store as no issue in cache since the solution was invalid
                                 let _ = cache.put(&func, &check.key, false, "Invalid diff - likely false positive", None);
                                 continue; // Skip to next check
