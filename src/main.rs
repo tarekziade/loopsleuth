@@ -143,6 +143,25 @@ struct CheckConfig {
     keyword: String,
     detection_prompt: String,
     solution_prompt: String,
+    #[serde(default = "default_verifier_prompt")]  // For backward compat
+    verifier_prompt: String,
+}
+
+fn default_verifier_prompt() -> String {
+    String::from("")  // Empty default for transition
+}
+
+#[derive(Debug, Clone)]
+struct ParsedDetection {
+    has_issue: bool,
+    confidence: Option<f32>,
+    _detail: String,  // Reserved for future use
+}
+
+#[derive(Debug, Clone)]
+struct VerificationResult {
+    is_valid: bool,
+    reason: String,
 }
 
 /// Optional settings from config file
@@ -167,7 +186,10 @@ struct ChecksConfig {
 impl CheckConfig {
     /// Generate detection prompt by substituting function source
     fn format_detection_prompt(&self, func: &FunctionInfo) -> String {
-        let mut prompt = self.detection_prompt.replace("{function_source}", &func.source);
+        let mut prompt = self.detection_prompt
+            .replace("{function_source}", &func.source)
+            .replace("{name}", &self.name)
+            .replace("{keyword}", &self.keyword);
 
         // Add special context for __init__ methods to reduce false positives
         if func.name == "__init__" {
@@ -190,21 +212,66 @@ impl CheckConfig {
 
     /// Generate solution prompt by substituting function source
     fn format_solution_prompt(&self, func: &FunctionInfo) -> String {
-        self.solution_prompt.replace("{function_source}", &func.source)
+        self.solution_prompt
+            .replace("{function_source}", &func.source)
+            .replace("{keyword}", &self.keyword)
     }
 
-    /// Check if the LLM response indicates an issue
-    /// Only checks the first line to avoid false positives from explanatory text
-    fn detect_issue(&self, response: &str) -> bool {
-        // Get the first non-empty line
-        let first_line = response
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("");
-
-        // Check if the keyword appears in the first line
-        first_line.to_uppercase().contains(&self.keyword.to_uppercase())
+    /// Generate verifier prompt by substituting function source and solution
+    fn format_verifier_prompt(&self, func: &FunctionInfo, solution: &str) -> String {
+        self.verifier_prompt
+            .replace("{function_source}", &func.source)
+            .replace("{solution}", solution)
+            .replace("{keyword}", &self.keyword)
     }
+
+    /// Parse structured detection output
+    /// Expected format: VERDICT: OK|{keyword}, CONFIDENCE: 0.0-1.0, DETAIL: text, END
+    fn parse_detection(&self, response: &str) -> ParsedDetection {
+        let mut has_issue = false;
+        let mut confidence: Option<f32> = None;
+        let mut detail = String::new();
+
+        for line in response.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with("VERDICT:") {
+                let verdict = trimmed[8..].trim().to_uppercase();
+                has_issue = verdict == self.keyword.to_uppercase();
+            } else if trimmed.starts_with("CONFIDENCE:") {
+                if let Ok(val) = trimmed[11..].trim().parse::<f32>() {
+                    confidence = Some(val.clamp(0.0, 1.0));
+                }
+            } else if trimmed.starts_with("DETAIL:") {
+                detail = trimmed[7..].trim().to_string();
+            } else if trimmed == "END" {
+                break;
+            }
+        }
+
+        ParsedDetection { has_issue, confidence, _detail: detail }
+    }
+}
+
+/// Parse verifier output
+fn parse_verification_result(response: &str) -> VerificationResult {
+    let mut is_valid = false;
+    let mut reason = String::new();
+
+    for line in response.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("VERDICT:") {
+            let verdict = trimmed[8..].trim().to_uppercase();
+            is_valid = verdict == "VALID";
+        } else if trimmed.starts_with("REASON:") {
+            reason = trimmed[7..].trim().to_string();
+        } else if trimmed == "END" {
+            break;
+        }
+    }
+
+    VerificationResult { is_valid, reason }
 }
 
 /// Get the default built-in checks configuration as a TOML string
@@ -778,16 +845,11 @@ fn main() -> Result<()> {
 
             // Run all checks for this function
             let mut check_results = Vec::new();
-            let mut has_any_issue = false;
 
             for check in &checks {
                 // Check cache first
                 if let Ok(Some(cached)) = cache.get(&func, &check.key) {
                     // Cache hit
-                    if cached.has_issue {
-                        has_any_issue = true;
-                    }
-
                     check_results.push(CheckResult {
                         check_key: check.key.to_string(),
                         check_name: check.name.to_string(),
@@ -830,11 +892,17 @@ fn main() -> Result<()> {
                 match detection_result {
                     Ok((analysis, _truncated, stats)) => {
                         total_stats.add(&stats);
-                        let has_issue = check.detect_issue(&analysis);
+                        let detection = check.parse_detection(&analysis);
+                        let has_issue = detection.has_issue;
+
+                        // Store confidence in analysis for debugging
+                        let enhanced_analysis = if let Some(conf) = detection.confidence {
+                            format!("{}\n[Confidence: {:.2}]", analysis, conf)
+                        } else {
+                            analysis.clone()
+                        };
 
                         if has_issue {
-                            has_any_issue = true;
-
                             // Generate solution
                             print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💡 [{}] Solution...",
                                    progress_bar, progress_pct, current_func_num, total_functions_count,
@@ -861,37 +929,78 @@ fn main() -> Result<()> {
                                 .unwrap_or(false);
 
                             if !is_valid_diff {
-                                // Invalid diff detected - skip this finding
-                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] Invalid diff",
+                                // Invalid diff - keep detection but mark solution as failed
+                                let failure_note = format!("{}\n\n[Solution validation failed: Generated diff was invalid]",
+                                                           enhanced_analysis);
+                                let _ = cache.put(&func, &check.key, true, &failure_note, None);
+
+                                check_results.push(CheckResult {
+                                    check_key: check.key.to_string(),
+                                    check_name: check.name.to_string(),
+                                    has_issue: true,
+                                    analysis: failure_note,
+                                    solution: None,
+                                });
+
+                                continue;
+                            }
+
+                            // Diff is valid according to validate_diff, run verifier if available
+                            if !check.verifier_prompt.is_empty() {
+                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
                                        progress_bar, progress_pct, current_func_num, total_functions_count,
                                        functions_with_issues, check.key);
                                 std::io::Write::flush(&mut std::io::stdout()).ok();
 
-                                // TODO: we still want to report it and say we don't have a solution 
-                                // Store as no issue in cache since the solution was invalid
-                                let _ = cache.put(&func, &check.key, false, "Invalid diff - likely false positive", None);
-                                continue; // Skip to next check
+                                let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
+                                let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    generate_response(&model, &mut ctx, &verifier_prompt, cli.max_tokens)
+                                }))
+                                .ok()
+                                .and_then(|r| r.ok());
+
+                                if let Some((verifier_output, _truncated, stats)) = verifier_result {
+                                    total_stats.add(&stats);
+                                    let verification = parse_verification_result(&verifier_output);
+
+                                    if !verification.is_valid {
+                                        // Verifier rejected - store detection but no solution
+                                        let rejection_note = format!("{}\n\n[Verifier rejected: {}]",
+                                                                    enhanced_analysis, verification.reason);
+                                        let _ = cache.put(&func, &check.key, true, &rejection_note, None);
+
+                                        check_results.push(CheckResult {
+                                            check_key: check.key.to_string(),
+                                            check_name: check.name.to_string(),
+                                            has_issue: true,
+                                            analysis: rejection_note,
+                                            solution: None,
+                                        });
+
+                                                continue;
+                                    }
+                                }
                             }
 
-                            // Store in cache
-                            let _ = cache.put(&func, &check.key, true, &analysis, solution.as_deref());
+                            // Verifier passed (or no verifier) - store in cache
+                            let _ = cache.put(&func, &check.key, true, &enhanced_analysis, solution.as_deref());
 
                             check_results.push(CheckResult {
                                 check_key: check.key.to_string(),
                                 check_name: check.name.to_string(),
                                 has_issue: true,
-                                analysis,
+                                analysis: enhanced_analysis,
                                 solution,
                             });
                         } else {
                             // No issue - store in cache
-                            let _ = cache.put(&func, &check.key, false, &analysis, None);
+                            let _ = cache.put(&func, &check.key, false, &enhanced_analysis, None);
 
                             check_results.push(CheckResult {
                                 check_key: check.key.to_string(),
                                 check_name: check.name.to_string(),
                                 has_issue: false,
-                                analysis,
+                                analysis: enhanced_analysis,
                                 solution: None,
                             });
                         }
@@ -1128,6 +1237,18 @@ fn generate_response(
         let token_str = model.token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)?;
         response.push_str(&token_str);
         output_token_count += 1;
+
+        // Check for custom stop sequence "END" on its own line
+        if let Some(last_line) = response.lines().last() {
+            if last_line.trim() == "END" {
+                // Remove the END line from response
+                if let Some(pos) = response.rfind('\n') {
+                    response.truncate(pos);
+                }
+                hit_eog = true;
+                break;
+            }
+        }
 
         // Prepare next batch
         batch.clear();

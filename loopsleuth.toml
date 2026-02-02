@@ -12,19 +12,6 @@
 # skip_large = 0                                              # Skip functions larger than N lines
 # cache_dir = ".loopsleuth_cache"                             # Cache directory path
 
-# Check Definitions
-# Each [[check]] section defines one check with the following fields:
-#
-# - key: Short identifier used in CLI (e.g., --checks quadratic)
-# - name: Display name shown in reports
-# - description: What the check detects
-# - category: Grouping category (e.g., "performance", "ml-specific")
-# - keyword: Keyword the LLM should include in response if issue detected
-# - detection_prompt: Template for the LLM prompt that detects the issue
-#                     Use {function_source} as placeholder for the function code
-# - solution_prompt: Template for the LLM prompt that generates solutions
-#                   Use {function_source} as placeholder for the function code
-
 [[check]]
 key = "quadratic"
 name = "Quadratic Complexity"
@@ -32,55 +19,89 @@ description = "Detects O(n²) or worse time complexity patterns (nested loops, e
 category = "performance"
 keyword = "QUADRATIC"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Your task is to analyze Python functions and identify if they contain quadratic O(n²) or worse time complexity patterns.
+You are a strict performance check. You MUST follow the output format exactly.
 
-Common quadratic patterns include:
-- Nested loops iterating over the same or related data structures
-- Loop with inner O(n) operations (like list.remove(), list.index(), string concatenation)
-- Repeated linear searches within a loop
-- Naive sorting or comparison algorithms
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: QUADRATIC" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "for i in range(n)", "for j in items", "nested loops").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
-Respond with "QUADRATIC" if you detect O(n²) or worse complexity, followed by a brief explanation.
-Respond with "OK" if the complexity is better than quadratic.<|im_end|>
+Define symbols when relevant:
+- N = number of items/tokens processed (dominant scaling dimension)
+- E = number of experts/layers if applicable
+- K = top_k if applicable
+Only label QUADRATIC if runtime is Ω(N^2) with respect to N.
+
+<|im_end|>
 <|im_start|>user
-Analyze the time complexity of this Python function:
+Check "Quadratic Complexity" with keyword "QUADRATIC".
 
+Function:
 ```python
 {function_source}
 ```
 
-Is this function quadratic (O(n²)) or worse?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix O(n²) time complexity.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has O(n²) time complexity:
+Issue keyword: QUADRATIC
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -91,7 +112,15 @@ description = "Detects hidden O(n) operations in loops (list.remove(), x in list
 category = "performance"
 keyword = "LINEAR_IN_LOOP"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for hidden O(n) operations inside loops that create O(n²) complexity.
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: LINEAR_IN_LOOP" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "x in list", "list.remove()", "list.index()").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
 Look for these patterns in loops:
 - `x in list` membership tests (O(n) per check)
@@ -100,47 +129,73 @@ Look for these patterns in loops:
 - `list.pop(0)` from front of list (O(n) per pop)
 - String concatenation with += in loops
 
-Respond with "LINEAR_IN_LOOP" if you detect these patterns, followed by a brief explanation.
-Respond with "OK" if no such patterns exist.<|im_end|>
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for hidden linear operations in loops:
+Check "Linear Operations in Loops" with keyword "LINEAR_IN_LOOP".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function have O(n) operations inside loops?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix hidden O(n) operations in loops.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has hidden O(n) operations in loops:
+Issue keyword: LINEAR_IN_LOOP
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -151,77 +206,93 @@ description = "Detects repeated expensive operations in loops (file I/O, network
 category = "performance"
 keyword = "N_PLUS_ONE"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for N+1 patterns where expensive operations that COULD be batched or moved outside the loop are instead repeated unnecessarily.
+You are a strict performance check. You MUST follow the output format exactly.
 
-ONLY flag as N+1 if the operation could be optimized by:
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: N_PLUS_ONE" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "open()", "requests.get()", "model.load()").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
+
+ONLY flag as N_PLUS_ONE if the operation could be optimized by:
 - Batching multiple requests into one (e.g., loading multiple files/records at once)
 - Moving the operation outside the loop (e.g., loading a model once before the loop)
 - Caching results that are repeatedly computed
 
-DO NOT flag these as N+1 (these are NECESSARY loop operations):
-- Iterating over items to process each one (e.g., closing multiple sessions/connections)
-- Async operations on different items (await on each item's operation)
+DO NOT flag (these are NECESSARY loop operations):
+- Iterating over items to process each one
+- Async operations on different items
 - Operations that MUST be done per-item by design
 
-Look for TRUE N+1 patterns inside loops:
-- Opening the SAME file repeatedly (instead of once)
-- Making separate network requests that could be batched
-- Separate database queries that could be a single query with WHERE IN
-- Loading the same model/resource multiple times
-- Repeated expensive computations with identical inputs
-
-Respond with "N_PLUS_ONE" ONLY if the expensive operation could clearly be batched or moved outside the loop.
-Respond with "OK" if the loop operations are necessary or already optimal.<|im_end|>
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for N+1 patterns:
+Check "N+1 Problem" with keyword "N_PLUS_ONE".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function have TRUE N+1 patterns where operations could be batched or moved outside the loop?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix N+1 problems by batching or moving operations outside loops.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: You MUST provide a unified diff that shows ACTUAL CHANGES to the code, not identical lines.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Example of a CORRECT diff (showing real changes):
-```diff
---- original
-+++ optimized
-@@ -5,8 +5,10 @@
- def process_users(user_ids):
-+    # Load all users at once (batching)
-+    users = db.get_users(user_ids)  # Single query
-+
-     for user_id in user_ids:
--        user = db.get_user(user_id)  # N+1: separate query per user
-+        user = users[user_id]  # Use pre-loaded data
-         process(user)
-```
-
-WRONG diff (identical lines - DO NOT DO THIS):
-```diff
--        user = db.get_user(user_id)
-+        user = db.get_user(user_id)
-```
-
-Output format:
-1. Issue Explanation: What expensive operation is being repeated?
-2. Optimization Strategy: How to batch/move/cache it?
-3. Unified Diff: Show the ACTUAL code changes with lines that are DIFFERENT
-
-The diff MUST show real changes - lines with - and + should be DIFFERENT code, not the same.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has N+1 problem with repeated expensive operations:
+Issue keyword: N_PLUS_ONE
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff with REAL changes (not identical before/after lines).<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -232,55 +303,88 @@ description = "Detects O(n) key functions in sort/sorted operations"
 category = "performance"
 keyword = "EXPENSIVE_SORT_KEY"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for expensive key functions in sort/sorted operations.
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: EXPENSIVE_SORT_KEY" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "key=lambda x: list.index(x)", "key=lambda x: x in other_list").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
 Look for sort/sorted with key functions that are O(n):
 - `key=lambda x: list.index(x)` - O(n) lookup per comparison
 - `key=lambda x: x in other_list` - O(n) membership test
 - `key=lambda x: re.match(pattern, x)` - expensive regex per comparison
-- Any key function that does lookups in unsorted data
 
-Respond with "EXPENSIVE_SORT_KEY" if you detect O(n) key functions in sorting, followed by a brief explanation.
-Respond with "OK" if sorting is efficient.<|im_end|>
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for expensive sort key functions:
+Check "Expensive Sort Key" with keyword "EXPENSIVE_SORT_KEY".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function use expensive key functions in sorting?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix expensive O(n) key functions in sorting.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has expensive O(n) key functions in sorting:
+Issue keyword: EXPENSIVE_SORT_KEY
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -291,63 +395,93 @@ description = "Detects growing allocations in loops (string concat, repeated cat
 category = "performance"
 keyword = "UNBOUNDED_ALLOC"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for unbounded memory allocations in loops.
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: UNBOUNDED_ALLOC" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "result += str", "torch.cat()", "result = result + [item]").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
 ONLY flag these TRUE unbounded allocation patterns:
-- String concatenation with += in loops (e.g., `result += str` creates new string each iteration)
+- String concatenation with += in loops (creates new string each iteration)
 - Repeated list/array concatenation (e.g., `result = result + [item]`)
 - `torch.cat()` or `np.concatenate()` repeatedly called in loops
-- Growing strings/buffers that could be pre-allocated
 
-DO NOT flag these (they are SAFE):
-- Bounded loops like `for i in range(n):` - if n is fixed, it's bounded
-- Appending to a list in a bounded loop (e.g., `list.append(x)` in `for i in range(10):`)
-- Counter increments (e.g., `count += 1` - this is an integer, not memory allocation)
-- Fixed-size iteration where the number of iterations is determined by input size
+DO NOT flag (they are SAFE):
+- Bounded loops like `for i in range(n)` where n is fixed
+- Appending to a list (e.g., `list.append(x)`)
+- Counter increments (e.g., `count += 1`)
 
-The key question: Does the MEMORY ALLOCATION grow without bounds, or is it proportional to a known input size?
-
-Respond with "UNBOUNDED_ALLOC" ONLY if memory grows without clear bounds.
-Respond with "OK" if allocations are bounded by input size or pre-allocated.<|im_end|>
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for unbounded allocations:
+Check "Unbounded Allocations" with keyword "UNBOUNDED_ALLOC".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function have TRUE unbounded memory allocations in loops?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix unbounded memory allocations in loops.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has unbounded memory allocations in loops:
+Issue keyword: UNBOUNDED_ALLOC
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -358,116 +492,283 @@ description = "Detects repeated CPU/GPU or tensor/array conversions in loops"
 category = "ml-specific"
 keyword = "CONVERSION_CHURN"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for repeated data conversion overhead in ML code.
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: CONVERSION_CHURN" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., ".cpu()", ".cuda()", ".to(device)", ".numpy()").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
 Look for these patterns in loops:
 - Repeated `.cpu()` or `.cuda()` or `.to(device)` calls
 - Repeated `.numpy()` conversions from tensors
 - Repeated `torch.tensor()` or `torch.from_numpy()` conversions
 - Back-and-forth between CPU and GPU
-- Repeated conversions between tensor types
 
-Respond with "CONVERSION_CHURN" if you detect repeated conversions in loops, followed by a brief explanation.
-Respond with "OK" if conversions are minimized or done once.<|im_end|>
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for conversion churn:
+Check "Conversion Churn" with keyword "CONVERSION_CHURN".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function repeatedly convert data between formats/devices?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix repeated data conversions.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has repeated data conversions:
+Issue keyword: CONVERSION_CHURN
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
 [[check]]
-key = "ml-footguns"
-name = "ML Anti-patterns"
-description = "Detects ML-specific issues (repeated tokenization, mask rebuilding)"
+key = "python-loop-over-token-dimension"
+name = "Python Loop Over Token Dimension"
+description = "Detects Python loops iterating over token/sequence dimensions in ML models"
 category = "ml-specific"
-keyword = "ML_FOOTGUN"
+keyword = "ML_LOOP_OVER_TOKENS"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Analyze Python functions for common ML/Transformers performance anti-patterns.
+You are a strict performance check. You MUST follow the output format exactly.
 
-Look for these patterns:
-- Repeated tokenization in loops (tokenize once, reuse)
-- Attention mask rebuilding on every iteration
-- Python loops iterating over individual tensor elements
-- Creating new tensors in tight loops
-- Moving tensors to device repeatedly
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: ML_LOOP_OVER_TOKENS" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "for i in range(seq_len)", "for token in tensor", "len(tensor)").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
-Respond with "ML_FOOTGUN" if you detect ML-specific performance issues, followed by a brief explanation.
-Respond with "OK" if ML operations are efficient.<|im_end|>
+Only flag if:
+- Python loop iterates over a tensor dimension (len(tensor), tensor.shape[0], range(seq_len))
+- Loop body operates on individual elements/tokens
+- Should be vectorized instead
+
+DO NOT flag:
+- Loops over layers/experts (that's architectural)
+- Loops for batching multiple sequences
+- Single-use initialization code
+
+<|im_end|>
 <|im_start|>user
-Analyze this Python function for ML performance issues:
+Check "Python Loop Over Token Dimension" with keyword "ML_LOOP_OVER_TOKENS".
 
+Function:
 ```python
 {function_source}
 ```
 
-Does this function have ML-specific performance anti-patterns?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix ML-specific performance issues.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has ML-specific performance issues:
+Issue keyword: ML_LOOP_OVER_TOKENS
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
+<|im_start|>assistant
+"""
+
+[[check]]
+key = "mask-built-in-layer-loop"
+name = "Mask Built In Layer Loop"
+description = "Detects attention masks being rebuilt inside per-layer loops"
+category = "ml-specific"
+keyword = "ML_MASK_IN_LOOP"
+detection_prompt = """<|im_start|>system
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: ML_MASK_IN_LOOP" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "torch.tril", "torch.ones", "mask creation in loop").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
+
+Only flag if:
+- Attention mask created inside a loop over layers/blocks
+- Same mask could be created once before loop
+- Operations like torch.tril, torch.ones for causal mask
+
+DO NOT flag:
+- Mask used once (not in loop)
+- Dynamic masks that change per iteration
+- Mask creation outside loops
+
+<|im_end|>
+<|im_start|>user
+Check "Mask Built In Layer Loop" with keyword "ML_MASK_IN_LOOP".
+
+Function:
+```python
+{function_source}
+```
+
+<|im_end|>
+<|im_start|>assistant
+"""
+solution_prompt = """<|im_start|>system
+You are an expert performance engineer. Produce a minimal, correct patch.
+
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+
+<|im_end|>
+<|im_start|>user
+Issue keyword: ML_MASK_IN_LOOP
+
+Function:
+```python
+{function_source}
+```
+
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -478,7 +779,15 @@ description = "Detects loops that grow containers while iterating"
 category = "performance"
 keyword = "GROWING_CONTAINER"
 detection_prompt = """<|im_start|>system
-You are a code complexity analyzer. Find the SPECIFIC pattern where a loop iterates over a container AND that SAME container grows inside the loop.
+You are a strict performance check. You MUST follow the output format exactly.
+
+Rules:
+- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: GROWING_CONTAINER" (use the check keyword EXACTLY).
+- CONFIDENCE must be a float 0.00-1.00.
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "for item in my_list", "my_list.append()").
+- If uncertain, output VERDICT: OK with lower confidence.
+- Do NOT include any other text.
 
 DANGEROUS pattern to find:
 ```python
@@ -491,48 +800,73 @@ The variable name after "for item in" MUST match the variable name before ".appe
 SAFE patterns (respond with OK):
 - `for x in list_a:` with `list_b.append()` - Different variables, SAFE
 - `for x in items:` with `items[x] = val` - Modifying elements, not growing, SAFE
-- `for x in items:` with no append/extend - SAFE
 
-IMPORTANT: Be precise with variable names. Look at the actual variable being iterated vs the variable being modified.
-
-If you find THE SAME variable in `for x in VAR` and `VAR.append/extend`, respond with "GROWING_CONTAINER".
-Otherwise, respond with "OK".<|im_end|>
+<|im_end|>
 <|im_start|>user
+Check "Growing Containers" with keyword "GROWING_CONTAINER".
+
+Function:
 ```python
 {function_source}
 ```
 
-Check: does any loop iterate over variable X and then modify THE SAME variable X with append/extend?<|im_end|>
+<|im_end|>
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert Python performance optimization consultant. Provide solutions to fix containers growing during iteration.
+You are an expert performance engineer. Produce a minimal, correct patch.
 
-IMPORTANT: Format your response as a unified diff showing only the changes needed.
+Hard constraints:
+- Output MUST contain exactly one ```diff fenced block and nothing else.
+- The diff must apply to the provided function as-is.
+- Do NOT reference variables that are not defined in the shown context.
+- Do NOT introduce syntax errors.
+- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
+- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
 
-Output format:
-1. Brief explanation of the issue (1-2 sentences)
-2. Optimization strategy
-3. Unified diff showing the changes:
-
-```diff
---- original
-+++ optimized
-@@ -line,count +line,count @@
- unchanged line
--removed line
-+added line
- unchanged line
-```
-
-Keep the diff concise - only show changed sections with 2-3 lines of context.<|im_end|>
+<|im_end|>
 <|im_start|>user
-This Python function has containers growing during iteration:
+Issue keyword: GROWING_CONTAINER
 
+Function:
 ```python
 {function_source}
 ```
 
-Provide a solution as a unified diff showing the specific changes needed.<|im_end|>
+<|im_end|>
+<|im_start|>assistant
+"""
+verifier_prompt = """<|im_start|>system
+You are a strict patch verifier.
+
+Input:
+- ORIGINAL FUNCTION
+- PROPOSED DIFF
+
+Output exactly:
+VERDICT: VALID | INVALID
+REASON: <one short reason, concrete>
+END
+
+INVALID if:
+- diff block missing
+- removed lines do not exist in original
+- introduces syntax errors (obvious)
+- references undefined variables
+- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+
+Do not add anything else.
+<|im_end|>
+<|im_start|>user
+Original function:
+```python
+{function_source}
+```
+
+Proposed solution:
+{solution}
+
+Is this valid? Output VERDICT:, REASON:, END.
+<|im_end|>
 <|im_start|>assistant
 """
