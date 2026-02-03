@@ -131,6 +131,7 @@ struct FunctionInfo {
     source: String,
     file_path: PathBuf,
     line_number: usize,
+    class_name: Option<String>,
 }
 
 /// Configuration for a single check loaded from TOML
@@ -828,8 +829,12 @@ fn main() -> Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
-            // TODO: if the function is in a class, we want to display the class name here
-            let func_display = format!("{}::{}", filename, func.name);
+            // Include class name in display if function is a method
+            let func_display = if let Some(ref class_name) = func.class_name {
+                format!("{}::{}::{}", filename, class_name, func.name)
+            } else {
+                format!("{}::{}", filename, func.name)
+            };
 
             // Skip large functions if requested
             if cli.skip_large > 0 {
@@ -1012,6 +1017,8 @@ fn main() -> Result<()> {
                                functions_with_issues, check.key,
                                if error_msg.contains("too large") { "Too large" } else { "Error" });
                         std::io::Write::flush(&mut std::io::stdout()).ok();
+                        // Log the actual error for debugging (use println to avoid stderr suppression)
+                        println!("\n   Debug: Error in {}: {}", func.name, error_msg);
                     }
                 }
             }
@@ -1100,7 +1107,7 @@ fn extract_functions(file_path: &PathBuf) -> Result<Vec<FunctionInfo>> {
     let mut functions = Vec::new();
 
     if let Mod::Module(module) = parsed {
-        extract_functions_from_body(&module.body, &source, file_path, &mut functions);
+        extract_functions_from_body(&module.body, &source, file_path, None, &mut functions);
     }
 
     Ok(functions)
@@ -1110,6 +1117,7 @@ fn extract_functions_from_body(
     body: &[Stmt],
     source: &str,
     file_path: &PathBuf,
+    class_name: Option<String>,
     functions: &mut Vec<FunctionInfo>,
 ) {
     for stmt in body {
@@ -1123,6 +1131,7 @@ fn extract_functions_from_body(
                     source: func_source,
                     file_path: file_path.clone(),
                     line_number,
+                    class_name: class_name.clone(),
                 });
             }
             Stmt::AsyncFunctionDef(func_def) => {
@@ -1134,11 +1143,18 @@ fn extract_functions_from_body(
                     source: func_source,
                     file_path: file_path.clone(),
                     line_number,
+                    class_name: class_name.clone(),
                 });
             }
             Stmt::ClassDef(class_def) => {
                 // Recursively extract functions from class bodies
-                extract_functions_from_body(&class_def.body, source, file_path, functions);
+                extract_functions_from_body(
+                    &class_def.body,
+                    source,
+                    file_path,
+                    Some(class_def.name.to_string()),
+                    functions
+                );
             }
             _ => {}
         }
@@ -1159,6 +1175,22 @@ fn count_lines_to_offset(source: &str, offset: impl Into<usize>) -> usize {
         .lines()
         .count()
         + 1
+}
+
+/// Extract confidence percentage from analysis text
+/// Looks for "[Confidence: X.XX]" pattern and converts to percentage
+fn extract_confidence_percentage(analysis: &str) -> u32 {
+    // Look for [Confidence: X.XX] pattern
+    if let Some(start) = analysis.find("[Confidence: ") {
+        if let Some(end) = analysis[start..].find(']') {
+            let conf_str = &analysis[start + 13..start + end];
+            if let Ok(conf_float) = conf_str.parse::<f32>() {
+                return (conf_float * 100.0).round() as u32;
+            }
+        }
+    }
+    // Default to 0 if not found
+    0
 }
 
 fn generate_response(
@@ -1234,9 +1266,19 @@ fn generate_response(
         }
 
         // Convert token to string
-        let token_str = model.token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)?;
-        response.push_str(&token_str);
-        output_token_count += 1;
+        // Handle UTF-8 conversion errors gracefully (some tokens may be incomplete multi-byte sequences)
+        match model.token_to_str(new_token, llama_cpp_2::model::Special::Tokenize) {
+            Ok(token_str) => {
+                response.push_str(&token_str);
+                output_token_count += 1;
+            }
+            Err(_) => {
+                // Skip tokens that can't be converted to valid UTF-8
+                // This can happen with incomplete multi-byte UTF-8 sequences in some models
+                // Continue generating to see if subsequent tokens form valid sequences
+                continue;
+            }
+        }
 
         // Check for custom stop sequence "END" on its own line
         if let Some(last_line) = response.lines().last() {
@@ -1441,9 +1483,14 @@ fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, 
                             .filter(|cr| cr.has_issue)
                             .map(|cr| cr.check_name.as_str())
                             .collect();
+                        let func_name = if let Some(ref class_name) = result.function.class_name {
+                            format!("{}::{}", class_name, result.function.name)
+                        } else {
+                            result.function.name.clone()
+                        };
                         println!(
                             "     • {} (line {})",
-                            result.function.name,
+                            func_name,
                             result.function.line_number
                         );
                         for issue in issues {
@@ -1461,9 +1508,14 @@ fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, 
                         .collect();
 
                     if !issues.is_empty() {
+                        let func_name = if let Some(ref class_name) = result.function.class_name {
+                            format!("{}::{}", class_name, result.function.name)
+                        } else {
+                            result.function.name.clone()
+                        };
                         println!(
                             "  • {} ({}:{})",
-                            result.function.name,
+                            func_name,
                             result.function.file_path.display(),
                             result.function.line_number
                         );
@@ -1500,7 +1552,12 @@ fn print_detailed_report(results: &[AnalysisResult]) {
         .collect();
 
     for (idx, result) in results_with_issues.iter().enumerate() {
-        println!("## {} - `{}`", idx + 1, result.function.name);
+        let func_name = if let Some(ref class_name) = result.function.class_name {
+            format!("{}::{}", class_name, result.function.name)
+        } else {
+            result.function.name.clone()
+        };
+        println!("## {} - `{}`", idx + 1, func_name);
         println!();
         println!("**Location:** `{}:{}`",
             result.function.file_path.display(),
@@ -1519,21 +1576,26 @@ fn print_detailed_report(results: &[AnalysisResult]) {
         let issues: Vec<_> = result.check_results.iter().filter(|cr| cr.has_issue).collect();
 
         for (issue_idx, issue) in issues.iter().enumerate() {
+            // Extract confidence from analysis
+            let confidence_pct = extract_confidence_percentage(&issue.analysis);
+
             if issues.len() > 1 {
-                println!("### ⚠️ Issue {}: {}", issue_idx + 1, issue.check_name);
+                println!("### ⚠️ Issue {}: {} (confidence: {}%)", issue_idx + 1, issue.check_name, confidence_pct);
             } else {
-                println!("### ⚠️ Issue: {}", issue.check_name);
+                println!("### ⚠️ Issue: {} (confidence: {}%)", issue.check_name, confidence_pct);
             }
-            println!();
-            println!("{}", issue.analysis.trim());
             println!();
 
             if let Some(solution) = &issue.solution {
+                // Show full analysis when we have a solution
+                println!("{}", issue.analysis.trim());
+                println!();
                 println!("### 💡 Suggested Optimization");
                 println!();
                 println!("{}", solution.trim());
                 println!();
             }
+            // When no solution, just show the simple warning above (no detailed analysis)
         }
 
         if idx < results_with_issues.len() - 1 {
@@ -1595,10 +1657,15 @@ fn write_report_to_file(
         for result in all_results.iter() {
             let issues: Vec<_> = result.check_results.iter().filter(|cr| cr.has_issue).collect();
             if !issues.is_empty() {
+                let func_name = if let Some(ref class_name) = result.function.class_name {
+                    format!("{}::{}", class_name, result.function.name)
+                } else {
+                    result.function.name.clone()
+                };
                 writeln!(
                     file,
                     "- `{}` ({}:{})",
-                    result.function.name,
+                    func_name,
                     result.function.file_path.display(),
                     result.function.line_number
                 )?;
@@ -1620,7 +1687,12 @@ fn write_report_to_file(
             .collect();
 
         for (idx, result) in results_with_issues.iter().enumerate() {
-            writeln!(file, "### {} - `{}`", idx + 1, result.function.name)?;
+            let func_name = if let Some(ref class_name) = result.function.class_name {
+                format!("{}::{}", class_name, result.function.name)
+            } else {
+                result.function.name.clone()
+            };
+            writeln!(file, "### {} - `{}`", idx + 1, func_name)?;
             writeln!(file)?;
             writeln!(
                 file,
@@ -1641,21 +1713,26 @@ fn write_report_to_file(
             let issues: Vec<_> = result.check_results.iter().filter(|cr| cr.has_issue).collect();
 
             for (issue_idx, issue) in issues.iter().enumerate() {
+                // Extract confidence from analysis
+                let confidence_pct = extract_confidence_percentage(&issue.analysis);
+
                 if issues.len() > 1 {
-                    writeln!(file, "#### ⚠️ Issue {}: {}", issue_idx + 1, issue.check_name)?;
+                    writeln!(file, "#### ⚠️ Issue {}: {} (confidence: {}%)", issue_idx + 1, issue.check_name, confidence_pct)?;
                 } else {
-                    writeln!(file, "#### ⚠️ Issue: {}", issue.check_name)?;
+                    writeln!(file, "#### ⚠️ Issue: {} (confidence: {}%)", issue.check_name, confidence_pct)?;
                 }
-                writeln!(file)?;
-                writeln!(file, "{}", issue.analysis.trim())?;
                 writeln!(file)?;
 
                 if let Some(solution) = &issue.solution {
+                    // Show full analysis when we have a solution
+                    writeln!(file, "{}", issue.analysis.trim())?;
+                    writeln!(file)?;
                     writeln!(file, "#### 💡 Suggested Optimization")?;
                     writeln!(file)?;
                     writeln!(file, "{}", solution.trim())?;
                     writeln!(file)?;
                 }
+                // When no solution, just show the simple warning above (no detailed analysis)
             }
 
             if idx < results_with_issues.len() - 1 {
