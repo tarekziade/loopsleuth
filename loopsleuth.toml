@@ -25,15 +25,23 @@ Rules:
 - Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
 - VERDICT must be either: "VERDICT: OK" OR "VERDICT: QUADRATIC" (use the check keyword EXACTLY).
 - CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "for i in range(n)", "for j in items", "nested loops").
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "list.index() in loop", "nested loops over same data").
 - If uncertain, output VERDICT: OK with lower confidence.
 - Do NOT include any other text.
 
+Look for these quadratic patterns:
+1. Nested loops iterating over the same or related data structures
+2. Linear operations inside loops: list.index(), x in list, list.remove()
+3. Operations that are O(n) being called n times
+
 Define symbols when relevant:
 - N = number of items/tokens processed (dominant scaling dimension)
-- E = number of experts/layers if applicable
-- K = top_k if applicable
-Only label QUADRATIC if runtime is Ω(N^2) with respect to N.
+Only label QUADRATIC if runtime is Ω(N^2) or worse with respect to N.
+
+IMPORTANT: Nested loops alone are NOT quadratic unless they iterate over related data.
+- QUADRATIC: for i in items: for j in items: (same data)
+- QUADRATIC: for item in items: idx = list.index(item) (O(n) in O(n) loop)
+- NOT QUADRATIC: for i in batch: for j in features: (independent dimensions)
 
 <|im_end|>
 <|im_start|>user
@@ -48,27 +56,74 @@ Function:
 <|im_start|>assistant
 """
 solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
+You are an expert performance engineer. Fix the quadratic complexity issue by outputting the COMPLETE optimized function.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+STEP-BY-STEP FIX FOR `list.index(x)` IN LOOP:
+
+Step 1: Identify the O(n) operation in the loop
+- Look for: `.index()` call on a list/sequence
+- This is O(n) because it scans the entire list each time
+
+Step 2: Pre-compute a lookup dictionary BEFORE the loop
+- Add this line BEFORE the loop starts:
+  `variable_to_index = {value: index for index, value in enumerate(the_list)}`
+- Use a descriptive name, not just 'd' or 'dict'
+
+Step 3: Replace the .index() call with dictionary lookup
+- Change: `idx = the_list.index(item)`
+- To: `idx = variable_to_index[item]`
+- Remove the `.index()` call completely - do NOT keep it
+
+EXAMPLE:
+```python
+# ORIGINAL (with performance issue):
+def process_items(items, reference_list):
+    results = []
+    for item in items:
+        idx = reference_list.index(item)  # ❌ O(n) - BAD
+        results.append(idx)
+    return results
+
+# OPTIMIZED (your output should look like this):
+def process_items(items, reference_list):
+    # Pre-build lookup dictionary to avoid O(n) .index() calls in loop
+    ref_to_index = {value: idx for idx, value in enumerate(reference_list)}
+
+    results = []
+    for item in items:
+        idx = ref_to_index[item]  # ✅ O(1) - GOOD
+        results.append(idx)
+    return results
+```
+
+CRITICAL REQUIREMENTS:
+- Output the COMPLETE optimized function inside ```python fenced block
+- Do NOT output a diff - output the full fixed function
+- Do NOT keep the .index() call - REPLACE it with dict lookup
+- Do NOT add error handling unless the original had it
+- Use clear variable names (e.g., `aspect_ratio_to_id`, not `d`)
+- Add a brief comment explaining the optimization
+- Keep the exact function signature (def line with all parameters and type hints)
+- Preserve all other logic exactly as-is
 
 <|im_end|>
 <|im_start|>user
 Issue keyword: QUADRATIC
 
-Function:
+Function to optimize:
 ```python
 {function_source}
 ```
 
+Output the COMPLETE optimized version of this function. Remember:
+1. Find the .index() or other O(n) operation
+2. Pre-build a lookup dict BEFORE the loop
+3. REPLACE the O(n) operation with O(1) dict lookup
+4. Output the FULL function in ```python block
+
 <|im_end|>
 <|im_start|>assistant
+```python
 """
 verifier_prompt = """<|im_start|>system
 You are a strict patch verifier.

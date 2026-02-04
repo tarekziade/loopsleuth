@@ -19,6 +19,7 @@ use sha2::{Sha256, Digest};
 use std::fs;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+use similar::{ChangeTag, TextDiff};
 
 #[derive(Parser)]
 #[command(name = "loopsleuth")]
@@ -91,6 +92,10 @@ struct Cli {
     /// Print the default checks configuration to stdout and exit
     #[arg(long)]
     print_default_config: bool,
+
+    /// Filter functions by name (substring match, case-insensitive)
+    #[arg(short = 'k', long, value_name = "NAME")]
+    filter_function: Option<String>,
 }
 
 /// Token usage statistics
@@ -129,6 +134,7 @@ impl TokenStats {
 struct FunctionInfo {
     name: String,
     source: String,
+    source_no_docstring: String,  // Version without docstring for LLM prompts
     file_path: PathBuf,
     line_number: usize,
     class_name: Option<String>,
@@ -188,7 +194,7 @@ impl CheckConfig {
     /// Generate detection prompt by substituting function source
     fn format_detection_prompt(&self, func: &FunctionInfo) -> String {
         let mut prompt = self.detection_prompt
-            .replace("{function_source}", &func.source)
+            .replace("{function_source}", &func.source_no_docstring)
             .replace("{name}", &self.name)
             .replace("{keyword}", &self.keyword);
 
@@ -214,14 +220,14 @@ impl CheckConfig {
     /// Generate solution prompt by substituting function source
     fn format_solution_prompt(&self, func: &FunctionInfo) -> String {
         self.solution_prompt
-            .replace("{function_source}", &func.source)
+            .replace("{function_source}", &func.source_no_docstring)
             .replace("{keyword}", &self.keyword)
     }
 
     /// Generate verifier prompt by substituting function source and solution
     fn format_verifier_prompt(&self, func: &FunctionInfo, solution: &str) -> String {
         self.verifier_prompt
-            .replace("{function_source}", &func.source)
+            .replace("{function_source}", &func.source_no_docstring)
             .replace("{solution}", solution)
             .replace("{keyword}", &self.keyword)
     }
@@ -795,11 +801,19 @@ fn main() -> Result<()> {
     // First pass: count total functions
     let mut total_functions_count = 0;
     for path in &python_files {
-        if let Ok(functions) = extract_functions(path) {
+        if let Ok(mut functions) = extract_functions(path) {
+            // Apply function name filter if specified
+            if let Some(ref filter) = cli.filter_function {
+                let filter_lower = filter.to_lowercase();
+                functions.retain(|func| func.name.to_lowercase().contains(&filter_lower));
+            }
             total_functions_count += functions.len();
         }
     }
 
+    if let Some(ref filter) = cli.filter_function {
+        println!("🔍 Filtering functions matching: \"{}\"", filter);
+    }
     println!("📊 Analyzing {} function(s)...\n", total_functions_count);
 
     let mut all_file_results: Vec<FileResults> = Vec::new();
@@ -810,7 +824,14 @@ fn main() -> Result<()> {
 
     // Process each file
     for file_path in &python_files {
-        let functions = extract_functions(&file_path)?;
+        let mut functions = extract_functions(&file_path)?;
+
+        // Apply function name filter if specified
+        if let Some(ref filter) = cli.filter_function {
+            let filter_lower = filter.to_lowercase();
+            functions.retain(|func| func.name.to_lowercase().contains(&filter_lower));
+        }
+
         let mut file_results = Vec::new();
 
         for func in functions {
@@ -880,7 +901,7 @@ fn main() -> Result<()> {
                 // Run detection
                 let detection_prompt = check.format_detection_prompt(&func);
                 let detection_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    generate_response(&model, &mut ctx, &detection_prompt, cli.max_tokens)
+                    generate_response(&model, &mut ctx, &detection_prompt, cli.max_tokens, cli.verbose)
                 }));
 
                 let detection_result = match detection_result {
@@ -916,26 +937,34 @@ fn main() -> Result<()> {
 
                             let solution_prompt = check.format_solution_prompt(&func);
                             let solution_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                generate_response(&model, &mut ctx, &solution_prompt, cli.max_tokens)
+                                generate_response(&model, &mut ctx, &solution_prompt, cli.max_tokens, cli.verbose)
                             }))
                             .ok()
                             .and_then(|r| r.ok());
 
-                            let solution = solution_result.as_ref().map(|(text, _truncated, _stats)| text.clone());
+                            let solution_text = solution_result.as_ref().map(|(text, _truncated, _stats)| text.clone());
 
                             // Accumulate stats from solution generation
                             if let Some((_text, _truncated, stats)) = solution_result {
                                 total_stats.add(&stats);
                             }
 
-                            // Validate the diff before accepting the finding
-                            let is_valid_diff = solution.as_ref()
-                                .map(|sol| validate_diff(sol, &func.source))
-                                .unwrap_or(false);
+                            // Extract optimized function and generate diff
+                            let optimized_and_diff = solution_text.as_ref()
+                                .and_then(|sol| {
+                                    let optimized = extract_optimized_function(sol)?;
 
-                            if !is_valid_diff {
-                                // Invalid diff - keep detection but mark solution as failed
-                                let failure_note = format!("{}\n\n[Solution validation failed: Generated diff was invalid]",
+                                    if !validate_optimization(&func.source_no_docstring, &optimized) {
+                                        return None;
+                                    }
+
+                                    let diff = generate_diff(&func.source_no_docstring, &optimized);
+                                    Some((optimized, diff))
+                                });
+
+                            if optimized_and_diff.is_none() {
+                                // Failed to extract or validate optimization
+                                let failure_note = format!("{}\n\n[Solution validation failed: Could not extract valid optimized function]",
                                                            enhanced_analysis);
                                 let _ = cache.put(&func, &check.key, true, &failure_note, None);
 
@@ -950,6 +979,9 @@ fn main() -> Result<()> {
                                 continue;
                             }
 
+                            let (_optimized_code, diff) = optimized_and_diff.unwrap();
+                            let solution = Some(format!("```diff\n{}\n```", diff));
+
                             // Diff is valid according to validate_diff, run verifier if available
                             if !check.verifier_prompt.is_empty() {
                                 print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
@@ -959,7 +991,7 @@ fn main() -> Result<()> {
 
                                 let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
                                 let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    generate_response(&model, &mut ctx, &verifier_prompt, cli.max_tokens)
+                                    generate_response(&model, &mut ctx, &verifier_prompt, cli.max_tokens, cli.verbose)
                                 }))
                                 .ok()
                                 .and_then(|r| r.ok());
@@ -1125,10 +1157,12 @@ fn extract_functions_from_body(
             Stmt::FunctionDef(func_def) => {
                 let func_source = extract_source_from_range(&source, func_def.range.start(), func_def.range.end());
                 let line_number = count_lines_to_offset(&source, func_def.range.start());
+                let func_source_no_docstring = strip_docstring(&func_source);
 
                 functions.push(FunctionInfo {
                     name: func_def.name.to_string(),
                     source: func_source,
+                    source_no_docstring: func_source_no_docstring,
                     file_path: file_path.clone(),
                     line_number,
                     class_name: class_name.clone(),
@@ -1137,10 +1171,12 @@ fn extract_functions_from_body(
             Stmt::AsyncFunctionDef(func_def) => {
                 let func_source = extract_source_from_range(&source, func_def.range.start(), func_def.range.end());
                 let line_number = count_lines_to_offset(&source, func_def.range.start());
+                let func_source_no_docstring = strip_docstring(&func_source);
 
                 functions.push(FunctionInfo {
                     name: func_def.name.to_string(),
                     source: func_source,
+                    source_no_docstring: func_source_no_docstring,
                     file_path: file_path.clone(),
                     line_number,
                     class_name: class_name.clone(),
@@ -1177,6 +1213,63 @@ fn count_lines_to_offset(source: &str, offset: impl Into<usize>) -> usize {
         + 1
 }
 
+/// Strip docstrings from Python function source to reduce token usage
+fn strip_docstring(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return source.to_string();
+    }
+
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut found_def = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        // Keep the def line
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            result.push(line);
+            found_def = true;
+            i += 1;
+            continue;
+        }
+
+        // After def, look for docstring
+        if found_def && (trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''")) {
+            let quote = if trimmed.starts_with("\"\"\"") { "\"\"\"" } else { "'''" };
+
+            // Check if it's a single-line docstring
+            if trimmed.ends_with(quote) && trimmed.len() > 6 {
+                // Single-line docstring - skip it
+                i += 1;
+                found_def = false;  // Only strip first docstring after def
+                continue;
+            }
+
+            // Multi-line docstring - skip until closing quotes
+            i += 1;
+            while i < lines.len() {
+                if lines[i].trim().ends_with(quote) {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            found_def = false;  // Only strip first docstring after def
+            continue;
+        }
+
+        // Keep all other lines
+        result.push(line);
+        found_def = false;  // Reset after any non-docstring line
+        i += 1;
+    }
+
+    result.join("\n")
+}
+
 /// Extract confidence percentage from analysis text
 /// Looks for "[Confidence: X.XX]" pattern and converts to percentage
 fn extract_confidence_percentage(analysis: &str) -> u32 {
@@ -1198,9 +1291,19 @@ fn generate_response(
     ctx: &mut LlamaContext,
     prompt: &str,
     max_tokens: i32,
+    verbose: bool,
 ) -> Result<(String, bool, TokenStats)> {  // Returns (response, was_truncated, token_stats)
     // Start timing
     let start_time = Instant::now();
+
+    // Show prompt in verbose mode
+    if verbose {
+        println!("\n╔════════════════════════════════════════════════════════════════");
+        println!("║ PROMPT");
+        println!("╚════════════════════════════════════════════════════════════════");
+        println!("{}", prompt);
+        println!("────────────────────────────────────────────────────────────────\n");
+    }
 
     // Tokenize the prompt (AddBos::Always adds BOS token)
     let tokens = model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)?;
@@ -1311,6 +1414,21 @@ fn generate_response(
     };
 
     let stats = TokenStats::new(input_token_count, output_token_count, generation_time);
+
+    // Show response in verbose mode
+    if verbose {
+        println!("\n╔════════════════════════════════════════════════════════════════");
+        println!("║ RESPONSE");
+        println!("╚════════════════════════════════════════════════════════════════");
+        println!("{}", cleaned_response);
+        println!("────────────────────────────────────────────────────────────────");
+        println!("📊 Tokens: {} in, {} out | Speed: {:.1} tok/s | Time: {:.1}s{}",
+            input_token_count, output_token_count,
+            stats.tokens_per_second(), generation_time.as_secs_f64(),
+            if was_truncated { " | ⚠️ TRUNCATED" } else { "" }
+        );
+        println!("────────────────────────────────────────────────────────────────\n");
+    }
 
     Ok((cleaned_response, was_truncated, stats))
 }
@@ -1435,6 +1553,73 @@ fn normalize_code_line(line: &str) -> String {
         .replace(" ", "")                  // Remove all whitespace
         .replace("\t", "")
         .to_lowercase()
+}
+
+/// Extract optimized function from LLM response
+/// The prompt pre-fills with ```python so the response starts directly with code
+/// and ends with ```
+fn extract_optimized_function(solution: &str) -> Option<String> {
+    // The solution should end with ``` (closing fence)
+    let end_marker = "```";
+
+
+    // Find the closing ```
+    let end = solution.find(end_marker)?;
+
+    // Everything before the ``` is the code
+    let mut code = solution[..end].trim().to_string();
+
+    // Remove any import statements that LLM might have added
+    let lines: Vec<&str> = code.lines().collect();
+    let filtered_lines: Vec<&str> = lines.into_iter()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("import ") && !trimmed.starts_with("from ")
+        })
+        .collect();
+
+    code = filtered_lines.join("\n");
+
+    Some(code.trim().to_string())
+}
+
+/// Generate a unified diff from original and optimized code
+fn generate_diff(original: &str, optimized: &str) -> String {
+    let diff = TextDiff::from_lines(original, optimized);
+    let mut result = String::new();
+
+    for change in diff.iter_all_changes() {
+        let sign = match change.tag() {
+            ChangeTag::Delete => "-",
+            ChangeTag::Insert => "+",
+            ChangeTag::Equal => " ",
+        };
+        result.push_str(&format!("{}{}", sign, change));
+    }
+
+    result
+}
+
+/// Validate that optimized function is substantially different from original
+fn validate_optimization(original: &str, optimized: &str) -> bool {
+    // Must be different
+    if original.trim() == optimized.trim() {
+        return false;
+    }
+
+    // Check that there are actual code changes (not just comment changes)
+    let orig_lines: Vec<&str> = original.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    let opt_lines: Vec<&str> = optimized.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+
+    // Must have at least some different non-comment lines
+    orig_lines != opt_lines
 }
 
 fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, functions_with_issues: usize, checks: &[CheckConfig], cache: &AnalysisCache, no_cache: bool, stats: &TokenStats) {
