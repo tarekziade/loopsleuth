@@ -148,6 +148,10 @@ struct CheckConfig {
     description: String,
     category: String,
     keyword: String,
+    #[serde(default)]
+    detection_rules: String,
+    #[serde(default)]
+    fix_recipes: String,
     detection_prompt: String,
     solution_prompt: String,
     #[serde(default = "default_verifier_prompt")]  // For backward compat
@@ -187,6 +191,8 @@ struct ConfigSettings {
 struct ChecksConfig {
     #[serde(default)]
     settings: ConfigSettings,
+    #[serde(default)]
+    templates: std::collections::HashMap<String, String>,
     check: Vec<CheckConfig>,
 }
 
@@ -321,8 +327,11 @@ fn load_checks_config(config_path: Option<PathBuf>) -> Result<ChecksConfig> {
     if let Some(path) = config_path {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        return toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path.display()));
+        let mut config: ChecksConfig = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+        apply_template_expansion(&mut config)
+            .with_context(|| format!("Failed to expand templates in config file: {}", path.display()))?;
+        return Ok(config);
     }
 
     // Try ~/.config/loopsleuth/loopsleuth.toml
@@ -335,14 +344,20 @@ fn load_checks_config(config_path: Option<PathBuf>) -> Result<ChecksConfig> {
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)
                 .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-            return toml::from_str(&content)
-                .with_context(|| format!("Failed to parse config file: {}", config_path.display()));
+            let mut config: ChecksConfig = toml::from_str(&content)
+                .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?;
+            apply_template_expansion(&mut config)
+                .with_context(|| format!("Failed to expand templates in config file: {}", config_path.display()))?;
+            return Ok(config);
         }
     }
 
     // Fall back to built-in defaults
-    toml::from_str(get_default_config_toml())
-        .context("Failed to parse built-in default configuration")
+    let mut config: ChecksConfig = toml::from_str(get_default_config_toml())
+        .context("Failed to parse built-in default configuration")?;
+    apply_template_expansion(&mut config)
+        .context("Failed to expand templates in built-in default configuration")?;
+    Ok(config)
 }
 
 // CheckConfig removed - now using CheckConfig directly from loaded configuration
@@ -351,6 +366,79 @@ fn load_checks_config(config_path: Option<PathBuf>) -> Result<ChecksConfig> {
 fn get_all_checks(cli: &Cli) -> Result<Vec<CheckConfig>> {
     let config = load_checks_config(cli.config.clone())?;
     Ok(config.check)
+}
+
+/// Expand {template:name} placeholders and inject detection/fix blocks.
+fn apply_template_expansion(config: &mut ChecksConfig) -> Result<()> {
+    let templates = &config.templates;
+
+    for check in &mut config.check {
+        warn_missing_template_refs(check, templates);
+
+        check.detection_prompt = expand_template_string(&check.detection_prompt, templates)
+            .context("Failed to expand detection prompt template")?;
+        check.detection_prompt = check
+            .detection_prompt
+            .replace("{detection_rules}", &check.detection_rules);
+
+        check.solution_prompt = expand_template_string(&check.solution_prompt, templates)
+            .context("Failed to expand solution prompt template")?;
+        check.solution_prompt = check
+            .solution_prompt
+            .replace("{fix_recipes}", &check.fix_recipes);
+
+        check.verifier_prompt = expand_template_string(&check.verifier_prompt, templates)
+            .context("Failed to expand verifier prompt template")?;
+        check.verifier_prompt = check
+            .verifier_prompt
+            .replace("{detection_rules}", &check.detection_rules)
+            .replace("{fix_recipes}", &check.fix_recipes);
+    }
+
+    Ok(())
+}
+
+fn warn_missing_template_refs(
+    check: &CheckConfig,
+    templates: &std::collections::HashMap<String, String>,
+) {
+    let mut missing: Vec<String> = Vec::new();
+    for prompt in [&check.detection_prompt, &check.solution_prompt, &check.verifier_prompt] {
+        if let Some(name) = get_template_name(prompt) {
+            if !templates.contains_key(name) && !missing.contains(&name.to_string()) {
+                missing.push(name.to_string());
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        eprintln!(
+            "Warning: check '{}' references missing templates: {}",
+            check.key,
+            missing.join(", ")
+        );
+    }
+}
+
+fn expand_template_string(
+    prompt: &str,
+    templates: &std::collections::HashMap<String, String>,
+) -> Result<String> {
+    let Some(name) = get_template_name(prompt) else {
+        return Ok(prompt.to_string());
+    };
+
+    templates
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Unknown template: {}", name))
+}
+
+fn get_template_name(prompt: &str) -> Option<&str> {
+    let trimmed = prompt.trim();
+    trimmed
+        .strip_prefix("{template:")
+        .and_then(|s| s.strip_suffix('}'))
 }
 
 

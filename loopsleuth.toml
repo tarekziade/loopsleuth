@@ -1,7 +1,15 @@
 # LoopSleuth Performance Checks Configuration
 #
 # This file defines the performance checks that LoopSleuth runs on Python code.
-# You can customize checks, add new ones, or modify existing prompts.
+# It uses shared prompt templates (basis) to keep all checkers consistent.
+#
+# IMPORTANT (expected by runner):
+# - The LLM must return a COMPLETE updated function (not a diff).
+# - LoopSleuth will compute the diff itself.
+# - The runner should support template expansion:
+#     - If a prompt is "{template:<name>}", substitute it with templates.<name>
+#     - Then interpolate placeholders:
+#         {name}, {keyword}, {function_source}, {solution}, {detection_rules}, {fix_recipes}
 
 [settings]
 # Default CLI options (all are optional and can be overridden by CLI flags)
@@ -12,40 +20,29 @@
 # skip_large = 0                                              # Skip functions larger than N lines
 # cache_dir = ".loopsleuth_cache"                             # Cache directory path
 
-[[check]]
-key = "quadratic"
-name = "Quadratic Complexity"
-description = "Detects O(n²) or worse time complexity patterns (nested loops, etc.)"
-category = "performance"
-keyword = "QUADRATIC"
-detection_prompt = """<|im_start|>system
+
+# =========================
+# Shared prompt templates
+# =========================
+[templates]
+
+# Detection template: always returns a 4-line verdict for machine parsing.
+detection_basis = """<|im_start|>system
 You are a strict performance check. You MUST follow the output format exactly.
 
 Rules:
 - Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: QUADRATIC" (use the check keyword EXACTLY).
+- VERDICT must be either: "VERDICT: OK" OR "VERDICT: {keyword}" (use the check keyword EXACTLY).
 - CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "list.index() in loop", "nested loops over same data").
+- DETAIL must cite concrete code tokens/operations from the function (e.g., "list.index() in loop", "torch.tril inside layer loop").
 - If uncertain, output VERDICT: OK with lower confidence.
 - Do NOT include any other text.
 
-Look for these quadratic patterns:
-1. Nested loops iterating over the same or related data structures
-2. Linear operations inside loops: list.index(), x in list, list.remove()
-3. Operations that are O(n) being called n times
-
-Define symbols when relevant:
-- N = number of items/tokens processed (dominant scaling dimension)
-Only label QUADRATIC if runtime is Ω(N^2) or worse with respect to N.
-
-IMPORTANT: Nested loops alone are NOT quadratic unless they iterate over related data.
-- QUADRATIC: for i in items: for j in items: (same data)
-- QUADRATIC: for item in items: idx = list.index(item) (O(n) in O(n) loop)
-- NOT QUADRATIC: for i in batch: for j in features: (independent dimensions)
+{detection_rules}
 
 <|im_end|>
 <|im_start|>user
-Check "Quadratic Complexity" with keyword "QUADRATIC".
+Check "{name}" with keyword "{keyword}".
 
 Function:
 ```python
@@ -55,82 +52,45 @@ Function:
 <|im_end|>
 <|im_start|>assistant
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Fix the quadratic complexity issue by outputting the COMPLETE optimized function.
 
-STEP-BY-STEP FIX FOR `list.index(x)` IN LOOP:
+# Solution template: ALWAYS returns the complete updated function (NOT a diff).
+solution_basis = """<|im_start|>system
+You are an expert performance engineer. Output the COMPLETE updated function (not a diff).
 
-Step 1: Identify the O(n) operation in the loop
-- Look for: `.index()` call on a list/sequence
-- This is O(n) because it scans the entire list each time
+Hard constraints:
+- Output MUST be exactly one ```python fenced block and nothing else.
+- The block must contain the FULL function definition (complete, runnable).
+- Keep the EXACT function signature (the def line, parameters, defaults, type hints) unchanged.
+- Preserve behavior unless the change is strictly required to fix the performance issue.
+- Do NOT add new dependencies.
+- Do NOT add error handling unless the original had it.
+- Add at most one short comment explaining the optimization.
 
-Step 2: Pre-compute a lookup dictionary BEFORE the loop
-- Add this line BEFORE the loop starts:
-  `variable_to_index = {value: index for index, value in enumerate(the_list)}`
-- Use a descriptive name, not just 'd' or 'dict'
-
-Step 3: Replace the .index() call with dictionary lookup
-- Change: `idx = the_list.index(item)`
-- To: `idx = variable_to_index[item]`
-- Remove the `.index()` call completely - do NOT keep it
-
-EXAMPLE:
-```python
-# ORIGINAL (with performance issue):
-def process_items(items, reference_list):
-    results = []
-    for item in items:
-        idx = reference_list.index(item)  # ❌ O(n) - BAD
-        results.append(idx)
-    return results
-
-# OPTIMIZED (your output should look like this):
-def process_items(items, reference_list):
-    # Pre-build lookup dictionary to avoid O(n) .index() calls in loop
-    ref_to_index = {value: idx for idx, value in enumerate(reference_list)}
-
-    results = []
-    for item in items:
-        idx = ref_to_index[item]  # ✅ O(1) - GOOD
-        results.append(idx)
-    return results
-```
-
-CRITICAL REQUIREMENTS:
-- Output the COMPLETE optimized function inside ```python fenced block
-- Do NOT output a diff - output the full fixed function
-- Do NOT keep the .index() call - REPLACE it with dict lookup
-- Do NOT add error handling unless the original had it
-- Use clear variable names (e.g., `aspect_ratio_to_id`, not `d`)
-- Add a brief comment explaining the optimization
-- Keep the exact function signature (def line with all parameters and type hints)
-- Preserve all other logic exactly as-is
+Fix guidance for this check:
+{fix_recipes}
 
 <|im_end|>
 <|im_start|>user
-Issue keyword: QUADRATIC
+Issue keyword: {keyword}
 
 Function to optimize:
 ```python
 {function_source}
 ```
 
-Output the COMPLETE optimized version of this function. Remember:
-1. Find the .index() or other O(n) operation
-2. Pre-build a lookup dict BEFORE the loop
-3. REPLACE the O(n) operation with O(1) dict lookup
-4. Output the FULL function in ```python block
-
+Output the COMPLETE updated version of this function.
 <|im_end|>
 <|im_start|>assistant
 ```python
 """
-verifier_prompt = """<|im_start|>system
+
+# Verifier template: validates ORIGINAL vs NEW FUNCTION (full function), not a diff.
+verifier_basis = """<|im_start|>system
 You are a strict patch verifier.
 
 Input:
 - ORIGINAL FUNCTION
-- PROPOSED DIFF
+- PROPOSED NEW FUNCTION (full function)
 
 Output exactly:
 VERDICT: VALID | INVALID
@@ -138,27 +98,80 @@ REASON: <one short reason, concrete>
 END
 
 INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
+- Proposed output is missing a ```python fenced block with a full function
+- Function signature (def line) changed
+- Introduces obvious syntax errors
+- References undefined variables (obvious)
+- Does not appear to address the stated issue keyword at all (best-effort)
+- Changes meaning in risky ways unrelated to the performance fix
 
 Do not add anything else.
 <|im_end|>
 <|im_start|>user
+Issue keyword: {keyword}
+
 Original function:
 ```python
 {function_source}
 ```
 
-Proposed solution:
+Proposed new function:
 {solution}
 
 Is this valid? Output VERDICT:, REASON:, END.
 <|im_end|>
 <|im_start|>assistant
 """
+
+
+# =========================
+# Checks
+# =========================
+
+[[check]]
+key = "quadratic"
+name = "Quadratic Complexity"
+description = "Detects O(n²) or worse time complexity patterns (nested loops, etc.)"
+category = "performance"
+keyword = "QUADRATIC"
+
+detection_rules = """Look for these quadratic patterns:
+1. Nested loops iterating over the same or related data structures
+2. Linear operations inside loops: list.index(), x in list, list.remove()
+3. Operations that are O(n) being called n times
+
+Define symbols when relevant:
+- N = number of items/tokens processed (dominant scaling dimension)
+
+Only label QUADRATIC if runtime is Ω(N^2) or worse with respect to N.
+
+IMPORTANT: Nested loops alone are NOT quadratic unless they iterate over related data.
+- QUADRATIC: for i in items: for j in items: (same data)
+- QUADRATIC: for item in items: idx = list.index(item) (O(n) in O(n) loop)
+- NOT QUADRATIC: for i in batch: for j in features: (independent dimensions)
+"""
+
+fix_recipes = """Pick the smallest safe transformation that removes Ω(N^2):
+
+A) If you see `list.index(x)` in a loop:
+- Precompute a lookup dict BEFORE the loop:
+  `value_to_index = {v: i for i, v in enumerate(the_list)}`
+- Replace `.index(x)` with `value_to_index[x]`
+
+B) If you see `x in some_list` inside a loop (membership test):
+- Precompute `some_set = set(some_list)` once (outside the loop)
+- Replace with `x in some_set`
+
+C) If you see nested loops over the same `items` doing comparisons/joins:
+- Consider building a dict/set keyed by the join key and doing O(1) lookups.
+- Preserve ordering semantics unless the original treats data as unordered.
+- Avoid refactors that change tie-breaking or output order.
+"""
+
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
+
 
 [[check]]
 key = "linear-in-loop"
@@ -166,93 +179,38 @@ name = "Linear Operations in Loops"
 description = "Detects hidden O(n) operations in loops (list.remove(), x in list, etc.)"
 category = "performance"
 keyword = "LINEAR_IN_LOOP"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: LINEAR_IN_LOOP" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "x in list", "list.remove()", "list.index()").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-Look for these patterns in loops:
+detection_rules = """Look for these patterns in loops:
 - `x in list` membership tests (O(n) per check)
 - `list.remove(x)` operations (O(n) per removal)
 - `list.index(x)` lookups (O(n) per lookup)
 - `list.pop(0)` from front of list (O(n) per pop)
-- String concatenation with += in loops
-
-<|im_end|>
-<|im_start|>user
-Check "Linear Operations in Loops" with keyword "LINEAR_IN_LOOP".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
+- String concatenation with += in loops (often O(n^2) overall)
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """Use the smallest safe change:
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: LINEAR_IN_LOOP
+A) Membership test in a loop:
+- If `x in some_list` occurs inside a loop and `some_list` is not changing:
+  - Precompute `some_set = set(some_list)` before the loop
+  - Replace with `x in some_set`
 
-Function:
-```python
-{function_source}
-```
+B) `list.index(x)` in a loop:
+- Precompute `value_to_index = {v: i for i, v in enumerate(the_list)}`
+- Replace `.index(x)` with `value_to_index[x]`
 
-<|im_end|>
-<|im_start|>assistant
+C) `list.pop(0)` in a loop:
+- If behavior is queue-like, use `collections.deque` and `popleft()` (hoist conversion once)
+
+D) `list.remove(x)` in a loop:
+- Prefer building a new list (filter) if semantics match.
+- If semantics are tricky (removing while iterating), keep behavior identical and add only a short comment if no safe change exists.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "expensive-sort-key"
@@ -260,91 +218,35 @@ name = "Expensive Sort Key"
 description = "Detects O(n) key functions in sort/sorted operations"
 category = "performance"
 keyword = "EXPENSIVE_SORT_KEY"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: EXPENSIVE_SORT_KEY" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "key=lambda x: list.index(x)", "key=lambda x: x in other_list").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
+detection_rules = """Look for sort/sorted with key functions that are O(n):
+- `key=lambda x: list.index(x)` - O(n) lookup per element
+- `key=lambda x: x in other_list` - O(n) membership test per element
+- expensive regex (e.g., `re.match`) per element
 
-Look for sort/sorted with key functions that are O(n):
-- `key=lambda x: list.index(x)` - O(n) lookup per comparison
-- `key=lambda x: x in other_list` - O(n) membership test
-- `key=lambda x: re.match(pattern, x)` - expensive regex per comparison
-
-<|im_end|>
-<|im_start|>user
-Check "Expensive Sort Key" with keyword "EXPENSIVE_SORT_KEY".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
+Only flag if the expensive operation is in the key function or comparator path for sort/sorted.
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """A) key uses `list.index(x)`:
+- Precompute `value_to_index = {v: i for i, v in enumerate(the_list)}`
+- Replace key with `key=lambda x: value_to_index[x]` (or `.get(x, default)` if original allowed missing)
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: EXPENSIVE_SORT_KEY
+B) key uses membership `x in other_list`:
+- Precompute `other_set = set(other_list)` once
+- Replace with `key=lambda x: x in other_set`
 
-Function:
-```python
-{function_source}
-```
+C) key uses regex repeatedly:
+- Precompile the regex outside: `pattern = re.compile(...)`
+- Use `pattern.match` in the key
 
-<|im_end|>
-<|im_start|>assistant
+Be careful:
+- Preserve stable ordering and tie-breaking behavior of the original sort.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "unbounded-alloc"
@@ -352,18 +254,8 @@ name = "Unbounded Allocations"
 description = "Detects growing allocations in loops (string concat, repeated cat)"
 category = "performance"
 keyword = "UNBOUNDED_ALLOC"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: UNBOUNDED_ALLOC" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "result += str", "torch.cat()", "result = result + [item]").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-ONLY flag these TRUE unbounded allocation patterns:
+detection_rules = """ONLY flag these TRUE unbounded allocation patterns:
 - String concatenation with += in loops (creates new string each iteration)
 - Repeated list/array concatenation (e.g., `result = result + [item]`)
 - `torch.cat()` or `np.concatenate()` repeatedly called in loops
@@ -372,76 +264,28 @@ DO NOT flag (they are SAFE):
 - Bounded loops like `for i in range(n)` where n is fixed
 - Appending to a list (e.g., `list.append(x)`)
 - Counter increments (e.g., `count += 1`)
-
-<|im_end|>
-<|im_start|>user
-Check "Unbounded Allocations" with keyword "UNBOUNDED_ALLOC".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """A) String concatenation in a loop:
+- Replace `s += piece` with:
+  - `parts.append(piece)` inside the loop
+  - `s = ''.join(parts)` after the loop
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: UNBOUNDED_ALLOC
+B) Repeated list concatenation:
+- Replace `result = result + [x]` with `result.append(x)` (or `extend`)
 
-Function:
-```python
-{function_source}
-```
+C) Repeated torch/np concatenate in a loop:
+- Collect tensors/arrays into a list during the loop
+- Concatenate once after the loop
 
-<|im_end|>
-<|im_start|>assistant
+Preserve behavior:
+- Keep exact output formatting and ordering.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "conversion-churn"
@@ -449,92 +293,37 @@ name = "Conversion Churn"
 description = "Detects repeated CPU/GPU or tensor/array conversions in loops"
 category = "ml-specific"
 keyword = "CONVERSION_CHURN"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: CONVERSION_CHURN" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., ".cpu()", ".cuda()", ".to(device)", ".numpy()").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-Look for these patterns in loops:
+detection_rules = """Look for these patterns in loops:
 - Repeated `.cpu()` or `.cuda()` or `.to(device)` calls
 - Repeated `.numpy()` conversions from tensors
 - Repeated `torch.tensor()` or `torch.from_numpy()` conversions
 - Back-and-forth between CPU and GPU
 
-<|im_end|>
-<|im_start|>user
-Check "Conversion Churn" with keyword "CONVERSION_CHURN".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
+Only flag if conversions are repeated in a loop and appear invariant.
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """Hoist invariant conversions:
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: CONVERSION_CHURN
+A) `.to(device)`, `.cpu()`, `.cuda()` inside a loop:
+- If the tensor/array being converted does not change across iterations, move conversion outside loop.
+- If each iteration produces a tensor, consider converting once on the final batch output (if semantics match).
 
-Function:
-```python
-{function_source}
-```
+B) `.numpy()` in a loop:
+- Prefer collecting tensors and converting once (or converting the batch) if safe.
 
-<|im_end|>
-<|im_start|>assistant
+C) `torch.tensor(...)` in a loop:
+- If converting from a Python list/np array, preconvert once outside when invariant, or batch the conversion.
+
+Avoid:
+- Changing dtype/device semantics.
+- Adding synchronization or extra copies.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "python-loop-over-token-dimension"
@@ -542,96 +331,36 @@ name = "Python Loop Over Token Dimension"
 description = "Detects Python loops iterating over token/sequence dimensions in ML models"
 category = "ml-specific"
 keyword = "ML_LOOP_OVER_TOKENS"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: ML_LOOP_OVER_TOKENS" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "for i in range(seq_len)", "for token in tensor", "len(tensor)").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-Only flag if:
-- Python loop iterates over a tensor dimension (len(tensor), tensor.shape[0], range(seq_len))
-- Loop body operates on individual elements/tokens
-- Should be vectorized instead
+detection_rules = """Only flag if:
+- A Python loop iterates over a tensor dimension (len(tensor), tensor.shape[0], range(seq_len))
+- The loop body operates on individual elements/tokens
+- This is likely a vectorization opportunity
 
 DO NOT flag:
-- Loops over layers/experts (that's architectural)
+- Loops over layers/experts (architectural)
 - Loops for batching multiple sequences
 - Single-use initialization code
-
-<|im_end|>
-<|im_start|>user
-Check "Python Loop Over Token Dimension" with keyword "ML_LOOP_OVER_TOKENS".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """Prefer minimal safe improvement:
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: ML_LOOP_OVER_TOKENS
+A) If a clear vectorized equivalent exists and preserves semantics:
+- Replace per-token Python loop with a tensor operation over the whole dimension.
 
-Function:
-```python
-{function_source}
-```
+B) If vectorization is risky without broader context:
+- Hoist invariant computations out of the loop (e.g., constants, masks, device conversions)
+- Add one short comment indicating potential vectorization, but keep behavior identical.
 
-<|im_end|>
-<|im_start|>assistant
+Do NOT:
+- Change shapes, broadcasting, or dtype behavior.
+- Change ordering-dependent logic.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "mask-built-in-layer-loop"
@@ -639,96 +368,35 @@ name = "Mask Built In Layer Loop"
 description = "Detects attention masks being rebuilt inside per-layer loops"
 category = "ml-specific"
 keyword = "ML_MASK_IN_LOOP"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: ML_MASK_IN_LOOP" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "torch.tril", "torch.ones", "mask creation in loop").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-Only flag if:
-- Attention mask created inside a loop over layers/blocks
-- Same mask could be created once before loop
-- Operations like torch.tril, torch.ones for causal mask
+detection_rules = """Only flag if:
+- An attention mask is created inside a loop over layers/blocks
+- The same mask could be created once before the loop
+- Operations like torch.tril, torch.ones used for causal mask
 
 DO NOT flag:
 - Mask used once (not in loop)
 - Dynamic masks that change per iteration
 - Mask creation outside loops
-
-<|im_end|>
-<|im_start|>user
-Check "Mask Built In Layer Loop" with keyword "ML_MASK_IN_LOOP".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """A) Invariant mask creation inside layer loop:
+- Move mask creation outside the layer loop
+- Reuse the same mask tensor for all layers
+- Ensure device/dtype match the tensors used in attention
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: ML_MASK_IN_LOOP
+B) If mask depends only on sequence length and is constant:
+- Build once and reuse (optionally cache within the function scope)
 
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
+Avoid:
+- Changing mask shape semantics (broadcasting).
+- Moving truly dynamic mask logic outside the loop.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
 
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
 
 [[check]]
 key = "growing-container"
@@ -736,18 +404,8 @@ name = "Growing Containers"
 description = "Detects loops that grow containers while iterating"
 category = "performance"
 keyword = "GROWING_CONTAINER"
-detection_prompt = """<|im_start|>system
-You are a strict performance check. You MUST follow the output format exactly.
 
-Rules:
-- Output must be exactly 4 lines: VERDICT, CONFIDENCE, DETAIL, END.
-- VERDICT must be either: "VERDICT: OK" OR "VERDICT: GROWING_CONTAINER" (use the check keyword EXACTLY).
-- CONFIDENCE must be a float 0.00-1.00.
-- DETAIL must cite concrete code tokens/operations from the function (e.g., "for item in my_list", "my_list.append()").
-- If uncertain, output VERDICT: OK with lower confidence.
-- Do NOT include any other text.
-
-DANGEROUS pattern to find:
+detection_rules = """DANGEROUS pattern to find:
 ```python
 for item in my_list:      # Iterating over my_list
     my_list.append(...)   # Growing THE SAME my_list - DANGEROUS!
@@ -758,73 +416,16 @@ The variable name after "for item in" MUST match the variable name before ".appe
 SAFE patterns (respond with OK):
 - `for x in list_a:` with `list_b.append()` - Different variables, SAFE
 - `for x in items:` with `items[x] = val` - Modifying elements, not growing, SAFE
-
-<|im_end|>
-<|im_start|>user
-Check "Growing Containers" with keyword "GROWING_CONTAINER".
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
 """
-solution_prompt = """<|im_start|>system
-You are an expert performance engineer. Produce a minimal, correct patch.
 
-Hard constraints:
-- Output MUST contain exactly one ```diff fenced block and nothing else.
-- The diff must apply to the provided function as-is.
-- Do NOT reference variables that are not defined in the shown context.
-- Do NOT introduce syntax errors.
-- Do NOT change semantics unless explicitly required by the issue (e.g. do not replace index_add_ with += if indices may repeat).
-- If a safe fix is not possible without larger refactor, output an empty diff that changes only a comment explaining why.
+fix_recipes = """A) If code appends to the same list it is iterating:
+- Iterate over a snapshot: `for x in my_list[:]` (minimal change) OR `for x in list(my_list)`
+- Or collect additions in a separate list and extend after the loop (often safest)
 
-<|im_end|>
-<|im_start|>user
-Issue keyword: GROWING_CONTAINER
-
-Function:
-```python
-{function_source}
-```
-
-<|im_end|>
-<|im_start|>assistant
+Preserve semantics:
+- If the original intended to process newly appended items too, do NOT change behavior; instead add a comment that it is intentionally growing and no safe performance fix exists without redesign.
 """
-verifier_prompt = """<|im_start|>system
-You are a strict patch verifier.
 
-Input:
-- ORIGINAL FUNCTION
-- PROPOSED DIFF
-
-Output exactly:
-VERDICT: VALID | INVALID
-REASON: <one short reason, concrete>
-END
-
-INVALID if:
-- diff block missing
-- removed lines do not exist in original
-- introduces syntax errors (obvious)
-- references undefined variables
-- changes meaning in risky ways (e.g. index_add_ -> += with potentially duplicate indices)
-
-Do not add anything else.
-<|im_end|>
-<|im_start|>user
-Original function:
-```python
-{function_source}
-```
-
-Proposed solution:
-{solution}
-
-Is this valid? Output VERDICT:, REASON:, END.
-<|im_end|>
-<|im_start|>assistant
-"""
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
