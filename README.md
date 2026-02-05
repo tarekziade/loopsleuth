@@ -280,22 +280,22 @@ loopsleuth --list-checks
 loopsleuth --print-default-config > my-loopsleuth.toml
 
 # Run with custom configuration
-loopsleuth --config my-loopsleuth.toml -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py
+loopsleuth --config my-loopsleuth.toml -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py
 
 # Run all checks (default)
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py
 
 # Run specific checks only
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --checks quadratic,linear-in-loop
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --checks quadratic,linear-in-loop
 
 # Run all except ML-specific checks
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --exclude conversion-churn,ml-footguns
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --exclude conversion-churn,ml-footguns
 
 # Full analysis in terminal
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --details
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --details
 
 # Save detailed report to file
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples/sample.py --output report.md
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --output report.md
 ```
 
 **For developers**: If you're building from source, use `cargo run --release --` instead of `loopsleuth`, or use `make example`.

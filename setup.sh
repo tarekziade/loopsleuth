@@ -108,4 +108,4 @@ else
 fi
 echo
 echo "Example:"
-echo "  ./target/release/loopsleuth --model $MODEL_PATH ./test_examples/sample.py"
+echo "  ./target/release/loopsleuth --model $MODEL_PATH ./tests/checks/quadratic.py"

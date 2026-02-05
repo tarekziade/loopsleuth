@@ -1,0 +1,9 @@
+{
+  "check_key": "python-loop-over-token-dimension",
+  "issues": {},
+  "clean": [
+    "loop_over_layers",
+    "scale_tokens_slow",
+    "sum_tokens_slow"
+  ]
+}

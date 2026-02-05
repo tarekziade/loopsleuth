@@ -1,0 +1,10 @@
+{
+  "check_key": "growing-container",
+  "issues": {},
+  "clean": [
+    "grow_other_list",
+    "grow_same_list",
+    "grow_same_list_snapshot",
+    "update_in_place"
+  ]
+}

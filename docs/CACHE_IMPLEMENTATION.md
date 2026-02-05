@@ -234,10 +234,10 @@ To verify the cache is working:
 
 ```bash
 # Run analysis (should analyze and cache)
-time ./target/release/loopsleuth -m model.gguf ./test_examples/sample.py
+time ./target/release/loopsleuth -m model.gguf ./tests/checks/quadratic.py
 
 # Run again (should use cache, much faster)
-time ./target/release/loopsleuth -m model.gguf ./test_examples/sample.py
+time ./target/release/loopsleuth -m model.gguf ./tests/checks/quadratic.py
 
 # Should see 💾 icons instead of 🔍 on second run
 ```

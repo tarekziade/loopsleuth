@@ -18,6 +18,7 @@ use rusqlite::{Connection, params};
 use sha2::{Sha256, Digest};
 use std::fs;
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 use std::time::{Duration, Instant};
 use similar::{ChangeTag, TextDiff};
 
@@ -156,6 +157,8 @@ struct CheckConfig {
     solution_prompt: String,
     #[serde(default = "default_verifier_prompt")]  // For backward compat
     verifier_prompt: String,
+    #[serde(default)]
+    guard: GuardConfig,
 }
 
 fn default_verifier_prompt() -> String {
@@ -194,6 +197,32 @@ struct ChecksConfig {
     #[serde(default)]
     templates: std::collections::HashMap<String, String>,
     check: Vec<CheckConfig>,
+    #[serde(default)]
+    dedupe: Vec<DedupeRule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct DedupeRule {
+    #[serde(default)]
+    prefer: String,
+    #[serde(default)]
+    drop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct GuardConfig {
+    #[serde(default)]
+    require_any: Vec<String>,
+    #[serde(default)]
+    require_all: Vec<String>,
+    #[serde(default)]
+    exclude_any: Vec<String>,
+    #[serde(default)]
+    require_regex_any: Vec<String>,
+    #[serde(default)]
+    require_regex_all: Vec<String>,
+    #[serde(default)]
+    exclude_regex_any: Vec<String>,
 }
 
 impl CheckConfig {
@@ -374,6 +403,8 @@ fn apply_template_expansion(config: &mut ChecksConfig) -> Result<()> {
 
     for check in &mut config.check {
         warn_missing_template_refs(check, templates);
+        validate_guard_patterns(check)
+            .with_context(|| format!("Failed to validate guard patterns for check '{}'", check.key))?;
 
         check.detection_prompt = expand_template_string(&check.detection_prompt, templates)
             .context("Failed to expand detection prompt template")?;
@@ -396,6 +427,73 @@ fn apply_template_expansion(config: &mut ChecksConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_guard_patterns(check: &CheckConfig) -> Result<()> {
+    for pattern in check.guard.require_regex_any.iter()
+        .chain(check.guard.require_regex_all.iter())
+        .chain(check.guard.exclude_regex_any.iter())
+    {
+        Regex::new(pattern)
+            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+    }
+    Ok(())
+}
+
+fn guard_skip_reason(check: &CheckConfig, func: &FunctionInfo) -> Result<Option<String>> {
+    let text = &func.source_no_docstring;
+
+    if !check.guard.require_any.is_empty()
+        && !check.guard.require_any.iter().any(|t| text.contains(t))
+    {
+        return Ok(Some("guard require_any missing".to_string()));
+    }
+
+    if !check.guard.require_all.is_empty()
+        && !check.guard.require_all.iter().all(|t| text.contains(t))
+    {
+        return Ok(Some("guard require_all missing".to_string()));
+    }
+
+    if !check.guard.exclude_any.is_empty()
+        && check.guard.exclude_any.iter().any(|t| text.contains(t))
+    {
+        return Ok(Some("guard exclude_any hit".to_string()));
+    }
+
+    if !check.guard.require_regex_any.is_empty() {
+        let mut matched = false;
+        for pattern in &check.guard.require_regex_any {
+            let re = Regex::new(pattern)?;
+            if re.is_match(text) {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Ok(Some("guard require_regex_any missing".to_string()));
+        }
+    }
+
+    if !check.guard.require_regex_all.is_empty() {
+        for pattern in &check.guard.require_regex_all {
+            let re = Regex::new(pattern)?;
+            if !re.is_match(text) {
+                return Ok(Some("guard require_regex_all missing".to_string()));
+            }
+        }
+    }
+
+    if !check.guard.exclude_regex_any.is_empty() {
+        for pattern in &check.guard.exclude_regex_any {
+            let re = Regex::new(pattern)?;
+            if re.is_match(text) {
+                return Ok(Some("guard exclude_regex_any hit".to_string()));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn warn_missing_template_refs(
@@ -521,6 +619,21 @@ struct CheckResult {
     has_issue: bool,
     analysis: String,
     solution: Option<String>,
+}
+
+fn dedupe_check_results(mut results: Vec<CheckResult>, rules: &[DedupeRule]) -> Vec<CheckResult> {
+    for rule in rules {
+        if rule.prefer.is_empty() || rule.drop.is_empty() {
+            continue;
+        }
+        let has_prefer = results
+            .iter()
+            .any(|r| r.has_issue && r.check_key == rule.prefer);
+        if has_prefer {
+            results.retain(|r| !(r.has_issue && rule.drop.contains(&r.check_key)));
+        }
+    }
+    results
 }
 
 #[derive(Clone)]
@@ -961,6 +1074,26 @@ fn main() -> Result<()> {
             let mut check_results = Vec::new();
 
             for check in &checks {
+                if let Some(reason) = guard_skip_reason(check, &func)? {
+                    let analysis = format!(
+                        "VERDICT: OK\nCONFIDENCE: 0.00\nDETAIL: Skipped by guard ({})\nEND",
+                        reason
+                    );
+                    let _ = cache.put(&func, &check.key, false, &analysis, None);
+                    check_results.push(CheckResult {
+                        check_key: check.key.to_string(),
+                        check_name: check.name.to_string(),
+                        has_issue: false,
+                        analysis,
+                        solution: None,
+                    });
+                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           functions_with_issues, check.key, func_display);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    continue;
+                }
+
                 // Check cache first
                 if let Ok(Some(cached)) = cache.get(&func, &check.key) {
                     // Cache hit
@@ -1145,6 +1278,7 @@ fn main() -> Result<()> {
 
             // Only count as having issues if we actually added results with issues
             // (not just detected issues that were later rejected due to invalid diffs)
+            let check_results = dedupe_check_results(check_results, &config.dedupe);
             let actually_has_issues = check_results.iter().any(|r| r.has_issue);
             if actually_has_issues {
                 functions_with_issues += 1;

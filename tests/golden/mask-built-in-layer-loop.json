@@ -1,0 +1,8 @@
+{
+  "check_key": "mask-built-in-layer-loop",
+  "issues": {},
+  "clean": [
+    "build_mask_in_layer_loop",
+    "build_mask_once"
+  ]
+}

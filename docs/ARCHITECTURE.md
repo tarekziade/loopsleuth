@@ -172,9 +172,12 @@ LoopSleuth/
 │       ├── __init__.py      # Package exports
 │       ├── __main__.py      # CLI entry point
 │       └── models.py        # Model download/management
-├── test_examples/           # Sample Python files for testing
-│   ├── sample.py           # Mixed complexity functions
-│   └── performance_issues.py # More edge cases
+├── tests/
+│   ├── checks/             # Per-check example files
+│   ├── golden/             # Golden expectations per check
+│   ├── extra/              # Non-check-specific examples
+│   ├── run_checks.py       # Golden test runner
+│   └── test_regression.sh  # Wrapper for run_checks.py
 ├── docs/                    # Documentation
 ├── Cargo.toml              # Rust dependencies
 ├── pyproject.toml          # Python package metadata
@@ -326,7 +329,7 @@ Total binary size (release): ~6.6MB (highly optimized)
 ## Testing Strategy
 
 - **Unit Tests**: Not currently implemented (single-file architecture)
-- **Integration Tests**: `test_examples/` directory with known patterns
+- **Integration Tests**: `tests/run_checks.py` with `tests/checks/` and golden files
 - **Manual Testing**: Run against real Python projects
 - **Validation**: Compare LLM results with manual analysis
 

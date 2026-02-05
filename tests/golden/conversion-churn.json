@@ -1,0 +1,9 @@
+{
+  "check_key": "conversion-churn",
+  "issues": {},
+  "clean": [
+    "convert_once",
+    "numpy_in_loop",
+    "to_device_in_loop"
+  ]
+}

@@ -20,6 +20,15 @@
 # skip_large = 0                                              # Skip functions larger than N lines
 # cache_dir = ".loopsleuth_cache"                             # Cache directory path
 
+# =========================
+# Dedupe rules
+# =========================
+
+[[dedupe]]
+# Prefer linear-in-loop and drop quadratic when both fire for the same function
+prefer = "linear-in-loop"
+drop = ["quadratic"]
+
 
 # =========================
 # Shared prompt templates
@@ -171,6 +180,9 @@ C) If you see nested loops over the same `items` doing comparisons/joins:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = ["for ", "while "]
+
 
 
 [[check]]
@@ -186,6 +198,11 @@ detection_rules = """Look for these patterns in loops:
 - `list.index(x)` lookups (O(n) per lookup)
 - `list.pop(0)` from front of list (O(n) per pop)
 - String concatenation with += in loops (often O(n^2) overall)
+
+Only flag if the exact operation appears in the loop body. Do NOT infer.
+Do NOT flag tensor slicing/assignment or plain indexing (e.g., `tensor[i, j] = ...`).
+Do NOT flag `list.index()` unless it is called directly in the loop body.
+If no such operations are present, output VERDICT: OK.
 """
 
 fix_recipes = """Use the smallest safe change:
@@ -224,7 +241,7 @@ detection_rules = """Look for sort/sorted with key functions that are O(n):
 - `key=lambda x: x in other_list` - O(n) membership test per element
 - expensive regex (e.g., `re.match`) per element
 
-Only flag if the expensive operation is in the key function or comparator path for sort/sorted.
+If there is no `sort(...)` or `sorted(...)` call, output VERDICT: OK.
 """
 
 fix_recipes = """A) key uses `list.index(x)`:
@@ -246,6 +263,10 @@ Be careful:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = ["sorted(", ".sort("]
+
+
 
 
 [[check]]
@@ -300,7 +321,10 @@ detection_rules = """Look for these patterns in loops:
 - Repeated `torch.tensor()` or `torch.from_numpy()` conversions
 - Back-and-forth between CPU and GPU
 
-Only flag if conversions are repeated in a loop and appear invariant.
+Only flag if conversions are repeated INSIDE a loop and the conversion target is invariant.
+Require at least one of these tokens to appear INSIDE the loop body:
+`.cpu(`, `.cuda(`, `.to(`, `.numpy(`, `torch.tensor(`, `torch.from_numpy(`.
+Do NOT flag single conversions or functions with no explicit Python loop.
 """
 
 fix_recipes = """Hoist invariant conversions:
@@ -323,6 +347,11 @@ Avoid:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = [".cpu(", ".cuda(", ".to(", ".numpy(", "torch.tensor(", "torch.from_numpy("]
+require_regex_any = ['\btorch\.tensor\s*\(', '\btorch\.from_numpy\s*\(']
+
+
 
 
 [[check]]
@@ -333,14 +362,15 @@ category = "ml-specific"
 keyword = "ML_LOOP_OVER_TOKENS"
 
 detection_rules = """Only flag if:
-- A Python loop iterates over a tensor dimension (len(tensor), tensor.shape[0], range(seq_len))
-- The loop body operates on individual elements/tokens
-- This is likely a vectorization opportunity
+- A Python loop iterates over a tensor/array dimension (len(tensor), tensor.shape[0], range(seq_len))
+- The loop body indexes the tensor by the loop variable (e.g., tensor[i], tensor[:, i])
+- This is likely a vectorization opportunity over the token/sequence dimension
 
 DO NOT flag:
 - Loops over layers/experts (architectural)
 - Loops for batching multiple sequences
 - Single-use initialization code
+- Loops over Python lists of images/batches (not token dimension)
 """
 
 fix_recipes = """Prefer minimal safe improvement:
@@ -360,6 +390,10 @@ Do NOT:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = [".shape", ".shape["]
+
+
 
 
 [[check]]
@@ -378,6 +412,7 @@ DO NOT flag:
 - Mask used once (not in loop)
 - Dynamic masks that change per iteration
 - Mask creation outside loops
+- Loops that are not over layers/blocks
 """
 
 fix_recipes = """A) Invariant mask creation inside layer loop:
@@ -396,6 +431,10 @@ Avoid:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = ["torch.tril(", "torch.ones("]
+
+
 
 
 [[check]]
@@ -416,6 +455,7 @@ The variable name after "for item in" MUST match the variable name before ".appe
 SAFE patterns (respond with OK):
 - `for x in list_a:` with `list_b.append()` - Different variables, SAFE
 - `for x in items:` with `items[x] = val` - Modifying elements, not growing, SAFE
+- Assigning into tensors/arrays (e.g., `tensor[i, j] = ...`) is SAFE
 """
 
 fix_recipes = """A) If code appends to the same list it is iterating:
@@ -429,3 +469,5 @@ Preserve semantics:
 detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_any = [".append("]

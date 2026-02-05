@@ -1,0 +1,11 @@
+{
+  "check_key": "expensive-sort-key",
+  "issues": {},
+  "clean": [
+    "sort_by_attribute",
+    "sort_by_index",
+    "sort_by_len",
+    "sort_by_membership",
+    "sort_with_regex"
+  ]
+}

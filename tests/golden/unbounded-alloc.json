@@ -1,0 +1,11 @@
+{
+  "check_key": "unbounded-alloc",
+  "issues": {},
+  "clean": [
+    "build_string_slow",
+    "cat_tensors_slow",
+    "collect_list_fast",
+    "concat_list_slow",
+    "counter_increment"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "check_key": "quadratic",
+  "issues": {},
+  "clean": [
+    "binary_search",
+    "bubble_sort",
+    "check_duplicates_naive",
+    "contains_subsequence_slow",
+    "count_elements",
+    "find_duplicates",
+    "linear_search",
+    "matrix_multiply_naive",
+    "necessary_comparison",
+    "optimized_duplicates",
+    "process_with_builtin",
+    "simple_loop",
+    "sum_of_pairs"
+  ]
+}

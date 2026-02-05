@@ -47,10 +47,10 @@ pip install loopsleuth
 loopsleuth download-model
 
 # Run analysis
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks
 
 # With details
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples --details
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks --details
 ```
 
 ### For Development (Building from Source)
@@ -66,13 +66,13 @@ cargo build --release
 loopsleuth download-model
 
 # Run via pip entry point
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./test_examples
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks
 
 # Or run directly from target
-./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
+./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks
 
 # Test
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./test_examples
+cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks
 ```
 
 ## Architecture
@@ -138,9 +138,14 @@ LoopSleuth/
 │   └── workflows/
 │       ├── publish.yml      # PyPI publishing workflow
 │       └── test-build.yml   # CI testing workflow
-├── test_examples/           # Python test files
-│   ├── sample.py
-│   └── performance_issues.py
+├── tests/
+│   ├── checks/             # Per-check example files
+│   ├── golden/             # Golden expectations per check
+│   ├── extra/              # Non-check-specific examples
+│   ├── run_checks.py       # Golden test runner
+│   ├── test_bootstrap.sh   # Bootstrap tests
+│   ├── test_pip_install.sh # Pip install tests
+│   └── test_regression.sh  # Wrapper for run_checks.py
 ├── examples/
 │   └── test_parse.rs        # Parser testing
 ├── Cargo.toml               # Rust dependencies & binary config
@@ -169,7 +174,7 @@ Not in git:
 ### Making Changes
 
 1. **Code is in single file**: `src/main.rs`
-2. **No tests yet**: Use `test_examples/` for manual testing
+2. **Tests**: Use `tests/run_checks.py` (golden-based) and `tests/checks/` for manual testing
 3. **Build**: `cargo build --release` (takes ~10s)
 4. **Test**: Run against test files
 5. **Check warnings**: `cargo clippy`
@@ -191,7 +196,7 @@ Not in git:
 
 **Add new complexity pattern:**
 - Modify system prompt in `analyze_complexity()`
-- Add test case to `test_examples/`
+- Add test case to `tests/checks/`
 
 **Modify cache behavior:**
 - See `AnalysisCache` struct in `main.rs`
@@ -248,22 +253,31 @@ fn extract_functions_from_body(body: &[Stmt], ...) {
 
 ## Testing Strategy
 
+### Golden Tests
+```bash
+# Generate/update goldens
+python3 tests/run_checks.py --update-golden
+
+# Verify against goldens
+python3 tests/run_checks.py
+```
+
 ### Manual Testing
 ```bash
 # Single file
-./target/release/loopsleuth -m model.gguf test_examples/sample.py
+./target/release/loopsleuth -m model.gguf tests/checks/quadratic.py
 
 # Directory
-./target/release/loopsleuth -m model.gguf test_examples/
+./target/release/loopsleuth -m model.gguf tests/checks/
 
 # With details
-./target/release/loopsleuth -m model.gguf test_examples/ --details
+./target/release/loopsleuth -m model.gguf tests/checks/ --details
 
 # Save report
-./target/release/loopsleuth -m model.gguf test_examples/ -o report.md
+./target/release/loopsleuth -m model.gguf tests/checks/ -o report.md
 
 # Verbose (show llama.cpp logs)
-./target/release/loopsleuth -m model.gguf test_examples/ --verbose
+./target/release/loopsleuth -m model.gguf tests/checks/ --verbose
 ```
 
 ### What to Test
@@ -369,7 +383,7 @@ fn propose_solution(...) {
 When modifying this project:
 
 1. **Keep it simple**: Single file architecture is intentional
-2. **Test manually**: Use test_examples/ before committing
+2. **Test manually**: Use tests/checks/ before committing
 3. **Update docs**: Keep README.md and ARCHITECTURE.md in sync
 4. **Clean output**: Ensure terminal output stays clean
 5. **Progress feedback**: Always show what's happening

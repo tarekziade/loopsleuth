@@ -1,0 +1,12 @@
+{
+  "check_key": "linear-in-loop",
+  "issues": {},
+  "clean": [
+    "index_in_loop",
+    "join_strings_fast",
+    "linear_search",
+    "remove_duplicates_fast",
+    "remove_duplicates_slow",
+    "remove_elements"
+  ]
+}

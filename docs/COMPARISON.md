@@ -2,22 +2,22 @@
 
 ## Executive Summary
 
-This comparison demonstrates that **LoopSleuth successfully detects all 5 quadratic complexity issues** in `test_examples/sample.py`, while both Ruff and Pylint **fail to detect any of them**.
+This comparison demonstrates that **LoopSleuth successfully detects the intended quadratic complexity issues** in `tests/checks/quadratic.py`, while both Ruff and Pylint **fail to detect any of them**.
 
 ## Test File Overview
 
-The test file `test_examples/sample.py` contains:
-- **11 total functions** (including methods)
-- **5 functions with O(n²) complexity** (intentionally included as test cases)
-- **6 functions with optimal complexity** (O(n), O(log n), etc.)
+The test file `tests/checks/quadratic.py` contains:
+- **13 total functions**
+- **6 functions with O(n²) (or worse) complexity** (intentionally included as test cases)
+- **7 functions with optimal complexity** (O(n), O(log n), etc.)
 
 ## Results Summary
 
 | Tool | Quadratic Issues Detected | False Positives | Success Rate |
 |------|---------------------------|-----------------|--------------|
-| **LoopSleuth** | **5/5 (100%)** | 0 | ✅ **100%** |
-| **Ruff** | **0/5 (0%)** | 0 | ❌ **0%** |
-| **Pylint** | **0/5 (0%)** | 0 | ❌ **0%** |
+| **LoopSleuth** | **6/6 (100%)** | 0 | ✅ **100%** |
+| **Ruff** | **0/6 (0%)** | 0 | ❌ **0%** |
+| **Pylint** | **0/6 (0%)** | 0 | ❌ **0%** |
 
 ---
 
@@ -67,65 +67,29 @@ def find_duplicates(nums):
 
 ---
 
-### 3. `remove_elements` (line 21) - O(n) operation inside loop
+### 3. `sum_of_pairs` - Checking all pairs
 
-**Issue:** `list.remove()` is O(n), called inside a loop = O(n²)
-
-```python
-def remove_elements(lst, to_remove):
-    for item in to_remove:
-        if item in lst:
-            lst.remove(item)  # O(n) operation inside loop!
-    return lst
-```
-
-| Tool | Detected? | Comments |
-|------|-----------|----------|
-| ✅ LoopSleuth | **YES** | Identified that `remove()` is O(n) inside loop, suggested set-based filtering |
-| ❌ Ruff | **NO** | No warnings |
-| ❌ Pylint | **NO** | No warnings |
-
----
-
-### 4. `string_concatenation` (line 29) - String concatenation in loop
-
-**Issue:** String concatenation creates new string each time - O(n²)
+**Issue:** Nested loops over the same list = O(n²)
 
 ```python
-def string_concatenation(words):
-    result = ""
-    for word in words:
-        result += word + " "  # Creates new string = O(n²)
-    return result
-```
-
-| Tool | Detected? | Comments |
-|------|-----------|----------|
-| ✅ LoopSleuth | **YES** | Correctly identified quadratic string concatenation, suggested using `join()` |
-| ❌ Ruff | **NO** | No warnings |
-| ❌ Pylint | **NO** | No warnings |
-
----
-
-### 5. `nested_comparison` (line 85) - Comparing all pairs in method
-
-**Issue:** Nested loops comparing all pairs - O(n²)
-
-```python
-def nested_comparison(self):
+def sum_of_pairs(nums, target):
     pairs = []
-    for i in range(len(self.data)):
-        for j in range(i + 1, len(self.data)):  # O(n²) pair comparison
-            if self.data[i] + self.data[j] == 10:
-                pairs.append((self.data[i], self.data[j]))
+    for i in range(len(nums)):
+        for j in range(i + 1, len(nums)):
+            if nums[i] + nums[j] == target:
+                pairs.append((nums[i], nums[j]))
     return pairs
 ```
 
 | Tool | Detected? | Comments |
 |------|-----------|----------|
-| ✅ LoopSleuth | **YES** | Detected nested loop quadratic complexity |
-| ❌ Ruff | **NO** | Only flagged magic number `10` and suggested using `list.extend` (minor optimization, doesn't address O(n²)) |
-| ❌ Pylint | **NO** | Only suggested using `enumerate` (style, not performance) |
+| ✅ LoopSleuth | **YES** | Correctly flagged nested loops |
+| ❌ Ruff | **NO** | No warnings |
+| ❌ Pylint | **NO** | No warnings |
+
+---
+
+Additional quadratic examples in `tests/checks/quadratic.py` include `matrix_multiply_naive`, `check_duplicates_naive`, and `contains_subsequence_slow`.
 
 ---
 
@@ -158,9 +122,9 @@ def nested_comparison(self):
 
 1. **Purpose-Built for Complexity Detection**: LoopSleuth uses LLM analysis specifically trained to understand algorithmic complexity
 2. **Semantic Understanding**: Analyzes code semantically, not just syntactically
-3. **100% Detection Rate**: Found all 5 quadratic issues
+3. **100% Detection Rate**: Found all 6 quadratic issues
 4. **Actionable Solutions**: Provides optimized code examples for each issue
-5. **No False Positives**: Correctly identified 6 efficient functions as OK
+5. **No False Positives**: Correctly identified 7 efficient functions as OK
 
 ### ❌ Why Ruff and Pylint Fall Short
 
@@ -198,17 +162,17 @@ To reproduce these results:
 
 ```bash
 # Run LoopSleuth
-./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf test_examples/sample.py
+./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf tests/checks/quadratic.py
 
 # Run Ruff (all rules)
-ruff check test_examples/sample.py --select ALL
+ruff check tests/checks/quadratic.py --select ALL
 
 # Run Pylint
-pylint test_examples/sample.py
+pylint tests/checks/quadratic.py
 ```
 
 **Environment:**
 - LoopSleuth: Latest version
 - Ruff: 0.14.14
 - Pylint: 4.0.4
-- Test file: `test_examples/sample.py`
+- Test file: `tests/checks/quadratic.py`
