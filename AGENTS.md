@@ -40,7 +40,7 @@ When working on this project, refer to these documents for detailed information:
 ### For Users (Standard Installation)
 
 ```bash
-# Install from PyPI
+# Install from PyPI (no Makefile target)
 pip install loopsleuth
 
 # Download a model
@@ -57,10 +57,10 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks --details
 
 ```bash
 # Install in development mode
-pip install -e .
+make install
 
 # Build the Rust binary
-cargo build --release
+make release
 
 # Download a model
 loopsleuth download-model
@@ -69,10 +69,10 @@ loopsleuth download-model
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks
 
 # Or run directly from target
-./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks
+make run MODEL=./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf PATH=./tests/checks
 
 # Test
-cargo run --release -- --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks
+make example
 ```
 
 ## Architecture
@@ -174,11 +174,11 @@ Not in git:
 ### Making Changes
 
 1. **Code is in single file**: `src/main.rs`
-2. **Tests**: Use `tests/run_checks.py` (golden-based) and `tests/checks/` for manual testing
-3. **Build**: `cargo build --release` (takes ~10s)
-4. **Test**: Run against test files
-5. **Check warnings**: `cargo clippy`
-6. **Verify YAML**: Use `yamllint` for GitHub workflows and config files
+2. **Tests**: Use `make golden-verify` (golden-based) and `make run` for manual testing
+3. **Build**: `make release` (takes ~10s)
+4. **Test**: `make test`
+5. **Check warnings**: `make clippy`
+6. **Verify YAML**: `make lint-yaml`
 
 ### Common Tasks
 
@@ -206,14 +206,7 @@ Not in git:
 
 **Validate YAML files:**
 ```bash
-# Check GitHub workflow syntax
-yamllint .github/workflows/*.yml
-
-# Use relaxed rules (fewer style warnings)
-yamllint -d relaxed .github/workflows/*.yml
-
-# Check specific file
-yamllint .github/workflows/test-build.yml
+make lint-yaml
 ```
 
 ## Important Implementation Details
@@ -256,28 +249,28 @@ fn extract_functions_from_body(body: &[Stmt], ...) {
 ### Golden Tests
 ```bash
 # Generate/update goldens
-python3 tests/run_checks.py --update-golden
+make golden-update
 
 # Verify against goldens
-python3 tests/run_checks.py
+make golden-verify
 ```
 
 ### Manual Testing
 ```bash
 # Single file
-./target/release/loopsleuth -m model.gguf tests/checks/quadratic.py
+make run MODEL=./models/model.gguf PATH=./tests/checks/quadratic.py
 
 # Directory
-./target/release/loopsleuth -m model.gguf tests/checks/
+make run MODEL=./models/model.gguf PATH=./tests/checks/
 
 # With details
-./target/release/loopsleuth -m model.gguf tests/checks/ --details
+./target/release/loopsleuth -m ./models/model.gguf ./tests/checks/ --details
 
 # Save report
-./target/release/loopsleuth -m model.gguf tests/checks/ -o report.md
+./target/release/loopsleuth -m ./models/model.gguf ./tests/checks/ -o report.md
 
 # Verbose (show llama.cpp logs)
-./target/release/loopsleuth -m model.gguf tests/checks/ --verbose
+./target/release/loopsleuth -m ./models/model.gguf ./tests/checks/ --verbose
 ```
 
 ### What to Test
