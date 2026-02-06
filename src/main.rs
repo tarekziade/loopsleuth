@@ -902,6 +902,62 @@ impl StderrSuppressor {
     }
 }
 
+/// RAII guard that redirects stdout to /dev/null and restores it on drop (Unix only)
+#[cfg(unix)]
+struct StdoutSuppressor {
+    original_stdout: Option<i32>,
+}
+
+#[cfg(unix)]
+impl StdoutSuppressor {
+    fn new() -> Result<Self> {
+        unsafe {
+            // Duplicate stdout so we can restore it later
+            let original_stdout = libc::dup(libc::STDOUT_FILENO);
+            if original_stdout < 0 {
+                return Err(anyhow::anyhow!("Failed to duplicate stdout"));
+            }
+
+            // Open /dev/null
+            let devnull = OpenOptions::new()
+                .write(true)
+                .open("/dev/null")?;
+
+            // Redirect stdout to /dev/null
+            if libc::dup2(devnull.as_raw_fd(), libc::STDOUT_FILENO) < 0 {
+                return Err(anyhow::anyhow!("Failed to redirect stdout"));
+            }
+
+            Ok(StdoutSuppressor {
+                original_stdout: Some(original_stdout),
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StdoutSuppressor {
+    fn drop(&mut self) {
+        if let Some(original) = self.original_stdout {
+            unsafe {
+                libc::dup2(original, libc::STDOUT_FILENO);
+                libc::close(original);
+            }
+        }
+    }
+}
+
+/// No-op stdout suppressor for Windows (stdout suppression not available)
+#[cfg(not(unix))]
+struct StdoutSuppressor;
+
+#[cfg(not(unix))]
+impl StdoutSuppressor {
+    fn new() -> Result<Self> {
+        Ok(StdoutSuppressor)
+    }
+}
+
 fn main() -> Result<()> {
     // Set up panic hook to provide better error messages
     std::panic::set_hook(Box::new(|panic_info| {
@@ -1175,32 +1231,66 @@ fn main() -> Result<()> {
                                 .and_then(|sol| {
                                     let optimized = extract_optimized_function(sol)?;
 
-                                    if !validate_optimization(&func.source_no_docstring, &optimized) {
-                                        return None;
+                                    if let Err(reason) = validate_optimization(&func.source_no_docstring, &optimized) {
+                                        return Some(Err(reason));
                                     }
 
                                     let diff = generate_diff(&func.source_no_docstring, &optimized);
-                                    Some((optimized, diff))
+                                    Some(Ok((optimized, diff)))
                                 });
 
-                            if optimized_and_diff.is_none() {
-                                // Failed to extract or validate optimization
-                                let failure_note = format!("{}\n\n[Solution validation failed: Could not extract valid optimized function]",
-                                                           enhanced_analysis);
-                                let _ = cache.put(&func, &check.key, true, &failure_note, None);
+                            let (_optimized_code, diff) = match optimized_and_diff {
+                                Some(Ok(pair)) => pair,
+                                Some(Err(reason)) => {
+                                    let failure_note = format!(
+                                        "{}\n\n[No safe change suggested: {}]",
+                                        enhanced_analysis, reason
+                                    );
+                                    if cli.verbose {
+                                        eprintln!(
+                                            "Verifier/validation: rejected solution for {} ({}): {}",
+                                            check.key,
+                                            func.name,
+                                            reason
+                                        );
+                                    }
+                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
 
-                                check_results.push(CheckResult {
-                                    check_key: check.key.to_string(),
-                                    check_name: check.name.to_string(),
-                                    has_issue: true,
-                                    analysis: failure_note,
-                                    solution: None,
-                                });
+                                    check_results.push(CheckResult {
+                                        check_key: check.key.to_string(),
+                                        check_name: check.name.to_string(),
+                                        has_issue: true,
+                                        analysis: failure_note,
+                                        solution: None,
+                                    });
 
-                                continue;
-                            }
+                                    continue;
+                                }
+                                None => {
+                                    let failure_note = format!(
+                                        "{}\n\n[No safe change suggested: Could not extract optimized function]",
+                                        enhanced_analysis
+                                    );
+                                    if cli.verbose {
+                                        eprintln!(
+                                            "Verifier/validation: rejected solution for {} ({}): could not extract optimized function",
+                                            check.key,
+                                            func.name
+                                        );
+                                    }
+                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
 
-                            let (_optimized_code, diff) = optimized_and_diff.unwrap();
+                                    check_results.push(CheckResult {
+                                        check_key: check.key.to_string(),
+                                        check_name: check.name.to_string(),
+                                        has_issue: true,
+                                        analysis: failure_note,
+                                        solution: None,
+                                    });
+
+                                    continue;
+                                }
+                            };
                             let solution = Some(format!("```diff\n{}\n```", diff));
 
                             // Diff is valid according to validate_diff, run verifier if available
@@ -1225,6 +1315,14 @@ fn main() -> Result<()> {
                                         // Verifier rejected - store detection but no solution
                                         let rejection_note = format!("{}\n\n[Verifier rejected: {}]",
                                                                     enhanced_analysis, verification.reason);
+                                        if cli.verbose {
+                                            eprintln!(
+                                                "Verifier rejected solution for {} ({}): {}",
+                                                check.key,
+                                                func.name,
+                                                verification.reason
+                                            );
+                                        }
                                         let _ = cache.put(&func, &check.key, true, &rejection_note, None);
 
                                         check_results.push(CheckResult {
@@ -1527,6 +1625,13 @@ fn generate_response(
         println!("────────────────────────────────────────────────────────────────\n");
     }
 
+    // Suppress any backend stdout noise during generation in verbose mode
+    let (stdout_suppressor, stderr_suppressor) = if verbose {
+        (Some(StdoutSuppressor::new()?), Some(StderrSuppressor::new()?))
+    } else {
+        (None, None)
+    };
+
     // Tokenize the prompt (AddBos::Always adds BOS token)
     let tokens = model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)?;
     let input_token_count = tokens.len();
@@ -1626,6 +1731,8 @@ fn generate_response(
     }
 
     let generation_time = start_time.elapsed();
+    drop(stdout_suppressor);
+    drop(stderr_suppressor);
     let was_truncated = !hit_eog;
 
     // If truncated, clean up any unclosed markdown code blocks
@@ -1778,18 +1885,26 @@ fn normalize_code_line(line: &str) -> String {
 }
 
 /// Extract optimized function from LLM response
-/// The prompt pre-fills with ```python so the response starts directly with code
-/// and ends with ```
 fn extract_optimized_function(solution: &str) -> Option<String> {
-    // The solution should end with ``` (closing fence)
+    // Handle responses that include an opening fence, and tolerate missing closing fence.
+    let mut body = solution.trim().to_string();
+    if body.starts_with("```") {
+        // Drop the opening fence line (e.g., ```python)
+        let mut lines = body.lines();
+        let _ = lines.next();
+        body = lines.collect::<Vec<_>>().join("\n");
+        body = body.trim().to_string();
+    }
+
+    // If a closing fence exists, stop there; otherwise use full body.
     let end_marker = "```";
+    let code_slice = if let Some(end) = body.find(end_marker) {
+        &body[..end]
+    } else {
+        body.as_str()
+    };
 
-
-    // Find the closing ```
-    let end = solution.find(end_marker)?;
-
-    // Everything before the ``` is the code
-    let mut code = solution[..end].trim().to_string();
+    let mut code = code_slice.trim().to_string();
 
     // Remove any import statements that LLM might have added
     let lines: Vec<&str> = code.lines().collect();
@@ -1823,10 +1938,10 @@ fn generate_diff(original: &str, optimized: &str) -> String {
 }
 
 /// Validate that optimized function is substantially different from original
-fn validate_optimization(original: &str, optimized: &str) -> bool {
+fn validate_optimization(original: &str, optimized: &str) -> Result<(), String> {
     // Must be different
     if original.trim() == optimized.trim() {
-        return false;
+        return Err("optimized code is identical to original".to_string());
     }
 
     // Check that there are actual code changes (not just comment changes)
@@ -1841,7 +1956,11 @@ fn validate_optimization(original: &str, optimized: &str) -> bool {
         .collect();
 
     // Must have at least some different non-comment lines
-    orig_lines != opt_lines
+    if orig_lines != opt_lines {
+        Ok(())
+    } else {
+        Err("optimized code only changes whitespace/comments".to_string())
+    }
 }
 
 fn print_summary(file_results: &[FileResults], file_count: usize, total: usize, functions_with_issues: usize, checks: &[CheckConfig], cache: &AnalysisCache, no_cache: bool, stats: &TokenStats) {
@@ -1974,9 +2093,11 @@ fn print_detailed_report(results: &[AnalysisResult]) {
 
         println!("### 📝 Original Code");
         println!();
+        let highlighted_source = highlight_source_for_issues(&result.function.source, &result.check_results);
         println!("```python");
-        println!("{}", result.function.source);
+        println!("{}", highlighted_source);
         println!("```");
+        println!("> Note: lines prefixed with '>>' are suspected hotspots.");
         println!();
 
         // Show all issues for this function
@@ -2017,6 +2138,99 @@ fn print_detailed_report(results: &[AnalysisResult]) {
     println!();
 }
 
+fn highlight_source_for_issues(source: &str, check_results: &[CheckResult]) -> String {
+    let mut tokens: Vec<String> = Vec::new();
+    for issue in check_results.iter().filter(|cr| cr.has_issue) {
+        tokens.extend(extract_detail_tokens(&issue.analysis));
+    }
+    tokens.sort();
+    tokens.dedup();
+
+    if tokens.is_empty() {
+        return source.to_string();
+    }
+
+    let mut out_lines = Vec::new();
+    for line in source.lines() {
+        if tokens.iter().any(|t| line.contains(t)) {
+            out_lines.push(format!(">> {}", line));
+        } else {
+            out_lines.push(format!("   {}", line));
+        }
+    }
+    out_lines.join("\n")
+}
+
+fn highlight_source_html(source: &str, check_results: &[CheckResult]) -> String {
+    let mut tokens: Vec<String> = Vec::new();
+    for issue in check_results.iter().filter(|cr| cr.has_issue) {
+        tokens.extend(extract_detail_tokens(&issue.analysis));
+    }
+    tokens.sort();
+    tokens.dedup();
+
+    if tokens.is_empty() {
+        return escape_html(source);
+    }
+
+    let mut out_lines = Vec::new();
+    for line in source.lines() {
+        let escaped = escape_html(line);
+        if tokens.iter().any(|t| line.contains(t)) {
+            out_lines.push(format!(
+                "<span class=\"hotspot\">{}</span>",
+                escaped
+            ));
+        } else {
+            out_lines.push(escaped);
+        }
+    }
+    out_lines.join("\n")
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn extract_detail_tokens(analysis: &str) -> Vec<String> {
+    let detail_line = analysis
+        .lines()
+        .find(|line| line.trim_start().starts_with("DETAIL:"))
+        .map(|line| line.trim_start()["DETAIL:".len()..].trim())
+        .unwrap_or("");
+
+    if detail_line.is_empty() {
+        return Vec::new();
+    }
+
+    let mut tokens = Vec::new();
+    let call_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_\.]*\s*\([^)]*\)").unwrap();
+    let dotted_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z0-9_\.]+").unwrap();
+
+    for cap in call_re.find_iter(detail_line) {
+        tokens.push(cap.as_str().trim().to_string());
+    }
+    for cap in dotted_re.find_iter(detail_line) {
+        tokens.push(cap.as_str().trim().to_string());
+    }
+
+    // Add simple variants without trailing punctuation to improve matching.
+    let mut variants = Vec::new();
+    for t in &tokens {
+        let trimmed = t.trim_end_matches(&[')', ',', '.'][..]).to_string();
+        if !trimmed.is_empty() {
+            variants.push(trimmed);
+        }
+    }
+    tokens.extend(variants);
+    tokens
+}
+
 fn write_report_to_file(
     path: &PathBuf,
     all_results: &[AnalysisResult],
@@ -2030,36 +2244,62 @@ fn write_report_to_file(
 
     let mut file = std::fs::File::create(path)?;
 
-    // Write header
-    writeln!(file, "# LoopSleuth Analysis Report")?;
-    writeln!(file)?;
-    writeln!(file, "Generated: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))?;
-    writeln!(file)?;
+    writeln!(file, "<!doctype html>")?;
+    writeln!(file, "<html lang=\"en\">")?;
+    writeln!(file, "<head>")?;
+    writeln!(file, "  <meta charset=\"utf-8\">")?;
+    writeln!(file, "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")?;
+    writeln!(file, "  <title>LoopSleuth Analysis Report</title>")?;
+    writeln!(file, "  <style>")?;
+    writeln!(file, "    body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 24px; color: #111; }}")?;
+    writeln!(file, "    h1, h2, h3, h4 {{ margin: 16px 0 8px; }}")?;
+    writeln!(file, "    .meta {{ color: #555; margin-bottom: 16px; }}")?;
+    writeln!(file, "    .summary li {{ margin: 4px 0; }}")?;
+    writeln!(file, "    .issue-list li {{ margin: 4px 0; }}")?;
+    writeln!(file, "    code, pre {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}")?;
+    writeln!(file, "    pre {{ background: #fafafa; border: 1px solid #eee; padding: 12px; overflow: auto; }}")?;
+    writeln!(file, "    .hotspot {{ background-color: #ffe6e6; }}")?;
+    writeln!(file, "    .note {{ color: #666; font-size: 0.9em; }}")?;
+    writeln!(file, "    hr {{ border: none; border-top: 1px solid #eee; margin: 20px 0; }}")?;
+    writeln!(file, "  </style>")?;
+    writeln!(file, "</head>")?;
+    writeln!(file, "<body>")?;
 
-    // Write summary
-    writeln!(file, "## Summary")?;
-    writeln!(file)?;
-    writeln!(file, "- **Total functions analyzed:** {}", total)?;
-    writeln!(file, "- **Checks run:** {} ({})",
+    writeln!(file, "<h1>LoopSleuth Analysis Report</h1>")?;
+    writeln!(
+        file,
+        "<div class=\"meta\">Generated: {}</div>",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )?;
+
+    writeln!(file, "<h2>Summary</h2>")?;
+    writeln!(file, "<ul class=\"summary\">")?;
+    writeln!(file, "<li><strong>Total functions analyzed:</strong> {}</li>", total)?;
+    writeln!(
+        file,
+        "<li><strong>Checks run:</strong> {} ({})</li>",
         checks.len(),
         checks.iter().map(|c| c.key.clone()).collect::<Vec<_>>().join(", ")
     )?;
-    writeln!(file, "- **Functions with issues:** {}", functions_with_issues)?;
-    writeln!(file, "- **Functions clean:** {}", total - functions_with_issues)?;
-
-    // Add cache statistics to report
+    writeln!(file, "<li><strong>Functions with issues:</strong> {}</li>", functions_with_issues)?;
+    writeln!(file, "<li><strong>Functions clean:</strong> {}</li>", total - functions_with_issues)?;
     if !no_cache {
         if let Ok((cache_total, cache_with_issues)) = cache.stats() {
             if cache_total > 0 {
-                writeln!(file, "- **Cache entries:** {} total, {} with issues", cache_total, cache_with_issues)?;
+                writeln!(
+                    file,
+                    "<li><strong>Cache entries:</strong> {} total, {} with issues</li>",
+                    cache_total,
+                    cache_with_issues
+                )?;
             }
         }
     }
-    writeln!(file)?;
+    writeln!(file, "</ul>")?;
 
     if functions_with_issues > 0 {
-        writeln!(file, "## Issues Detected")?;
-        writeln!(file)?;
+        writeln!(file, "<h2>Issues Detected</h2>")?;
+        writeln!(file, "<ul class=\"issue-list\">")?;
 
         for result in all_results.iter() {
             let issues: Vec<_> = result.check_results.iter().filter(|cr| cr.has_issue).collect();
@@ -2071,25 +2311,25 @@ fn write_report_to_file(
                 };
                 writeln!(
                     file,
-                    "- `{}` ({}:{})",
-                    func_name,
-                    result.function.file_path.display(),
+                    "<li><code>{}</code> ({}:{})",
+                    escape_html(&func_name),
+                    escape_html(&result.function.file_path.display().to_string()),
                     result.function.line_number
                 )?;
+                writeln!(file, "<ul>")?;
                 for issue in issues {
-                    writeln!(file, "  - {}", issue.check_name)?;
+                    writeln!(file, "<li>{}</li>", escape_html(&issue.check_name))?;
                 }
+                writeln!(file, "</ul></li>")?;
             }
         }
-        writeln!(file)?;
+        writeln!(file, "</ul>")?;
 
-        // Write detailed report
-        writeln!(file, "---")?;
-        writeln!(file)?;
-        writeln!(file, "## Detailed Analysis")?;
-        writeln!(file)?;
+        writeln!(file, "<hr>")?;
+        writeln!(file, "<h2>Detailed Analysis</h2>")?;
 
-        let results_with_issues: Vec<_> = all_results.iter()
+        let results_with_issues: Vec<_> = all_results
+            .iter()
             .filter(|r| r.check_results.iter().any(|cr| cr.has_issue))
             .collect();
 
@@ -2099,60 +2339,55 @@ fn write_report_to_file(
             } else {
                 result.function.name.clone()
             };
-            writeln!(file, "### {} - `{}`", idx + 1, func_name)?;
-            writeln!(file)?;
+            writeln!(file, "<h3>{} - <code>{}</code></h3>", idx + 1, escape_html(&func_name))?;
             writeln!(
                 file,
-                "**Location:** `{}:{}`",
-                result.function.file_path.display(),
+                "<div><strong>Location:</strong> <code>{}:{}</code></div>",
+                escape_html(&result.function.file_path.display().to_string()),
                 result.function.line_number
             )?;
-            writeln!(file)?;
+            writeln!(file, "<h4>Original Code</h4>")?;
+            let highlighted_html = highlight_source_html(&result.function.source, &result.check_results);
+            writeln!(file, "<pre><code class=\"language-python\">{}</code></pre>", highlighted_html)?;
+            writeln!(file, "<div class=\"note\">Lines with light red background are suspected hotspots.</div>")?;
 
-            writeln!(file, "#### 📝 Original Code")?;
-            writeln!(file)?;
-            writeln!(file, "```python")?;
-            writeln!(file, "{}", result.function.source)?;
-            writeln!(file, "```")?;
-            writeln!(file)?;
-
-            // Write all issues for this function
             let issues: Vec<_> = result.check_results.iter().filter(|cr| cr.has_issue).collect();
-
             for (issue_idx, issue) in issues.iter().enumerate() {
-                // Extract confidence from analysis
                 let confidence_pct = extract_confidence_percentage(&issue.analysis);
-
                 if issues.len() > 1 {
-                    writeln!(file, "#### ⚠️ Issue {}: {} (confidence: {}%)", issue_idx + 1, issue.check_name, confidence_pct)?;
+                    writeln!(
+                        file,
+                        "<h4>Issue {}: {} (confidence: {}%)</h4>",
+                        issue_idx + 1,
+                        escape_html(&issue.check_name),
+                        confidence_pct
+                    )?;
                 } else {
-                    writeln!(file, "#### ⚠️ Issue: {} (confidence: {}%)", issue.check_name, confidence_pct)?;
+                    writeln!(
+                        file,
+                        "<h4>Issue: {} (confidence: {}%)</h4>",
+                        escape_html(&issue.check_name),
+                        confidence_pct
+                    )?;
                 }
-                writeln!(file)?;
 
                 if let Some(solution) = &issue.solution {
-                    // Show full analysis when we have a solution
-                    writeln!(file, "{}", issue.analysis.trim())?;
-                    writeln!(file)?;
-                    writeln!(file, "#### 💡 Suggested Optimization")?;
-                    writeln!(file)?;
-                    writeln!(file, "{}", solution.trim())?;
-                    writeln!(file)?;
+                    writeln!(file, "<div><pre><code>{}</code></pre></div>", escape_html(issue.analysis.trim()))?;
+                    writeln!(file, "<h4>Suggested Optimization</h4>")?;
+                    writeln!(file, "<div><pre><code>{}</code></pre></div>", escape_html(solution.trim()))?;
                 }
-                // When no solution, just show the simple warning above (no detailed analysis)
             }
 
             if idx < results_with_issues.len() - 1 {
-                writeln!(file, "---")?;
-                writeln!(file)?;
+                writeln!(file, "<hr>")?;
             }
         }
     }
 
-    writeln!(file)?;
-    writeln!(file, "---")?;
-    writeln!(file)?;
-    writeln!(file, "*Generated by [LoopSleuth](https://github.com/tarekziade/loopsleuth)*")?;
+    writeln!(file, "<hr>")?;
+    writeln!(file, "<div class=\"note\">Generated by LoopSleuth</div>")?;
+    writeln!(file, "</body>")?;
+    writeln!(file, "</html>")?;
 
     Ok(())
 }

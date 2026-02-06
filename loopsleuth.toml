@@ -321,10 +321,18 @@ detection_rules = """Look for these patterns in loops:
 - Repeated `torch.tensor()` or `torch.from_numpy()` conversions
 - Back-and-forth between CPU and GPU
 
-Only flag if conversions are repeated INSIDE a loop and the conversion target is invariant.
+Only flag if conversions are repeated INSIDE a Python `for`/`while` loop and the conversion target is invariant.
 Require at least one of these tokens to appear INSIDE the loop body:
 `.cpu(`, `.cuda(`, `.to(`, `.numpy(`, `torch.tensor(`, `torch.from_numpy(`.
-Do NOT flag single conversions or functions with no explicit Python loop.
+
+DO NOT flag:
+- Single conversions outside loops
+- Functions with no explicit Python loop
+- `.item()`/`.tolist()` used for indices or list accumulation
+- Converting once before/after the loop for batching
+- `.to(...)` or `torch.tensor(...)` that occurs only outside the loop body
+
+If you cannot point to a conversion token that is inside the loop body, output OK.
 """
 
 fix_recipes = """Hoist invariant conversions:
@@ -432,7 +440,7 @@ detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
 [check.guard]
-require_any = ["torch.tril(", "torch.ones("]
+require_any = ["torch.tril(", "torch.triu(", "create_causal_mask("]
 
 
 
@@ -444,7 +452,7 @@ description = "Detects loops that grow containers while iterating"
 category = "performance"
 keyword = "GROWING_CONTAINER"
 
-detection_rules = """DANGEROUS pattern to find:
+detection_rules = """DANGEROUS pattern to find (ONLY this pattern):
 ```python
 for item in my_list:      # Iterating over my_list
     my_list.append(...)   # Growing THE SAME my_list - DANGEROUS!
@@ -456,6 +464,14 @@ SAFE patterns (respond with OK):
 - `for x in list_a:` with `list_b.append()` - Different variables, SAFE
 - `for x in items:` with `items[x] = val` - Modifying elements, not growing, SAFE
 - Assigning into tensors/arrays (e.g., `tensor[i, j] = ...`) is SAFE
+- `for _ in range(...): list.append(...)` - Not iterating over the list itself, SAFE
+- `for x in zip(...)/enumerate(...)/range(...): list.append(...)` - Not iterating over the list itself, SAFE
+
+Only flag if:
+- The loop header is `for <item> in <list_name>:` where `<list_name>` is a simple variable name
+- The loop body contains `<list_name>.append(...)` using the exact same `<list_name>`
+
+If you cannot cite the exact same list name in both the loop header and the `.append(...)` call, output OK.
 """
 
 fix_recipes = """A) If code appends to the same list it is iterating:
@@ -471,3 +487,4 @@ solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
 [check.guard]
 require_any = [".append("]
+require_regex_any = ["for\\s+\\w+\\s+in\\s+[\\w\\.]+\\s*:"]
