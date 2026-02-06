@@ -56,7 +56,7 @@ That's it! The `download-model` command will show you available models, download
 
 - **Fully Configurable**: Define checks, customize prompts, and set defaults via TOML configuration file
 - **8 Built-in Performance Checks**: Detects multiple types of performance issues beyond just quadratic complexity
-- Parses Python code using Ruff's parser (fast and accurate)
+- Parses Python code using RustPython's parser
 - Extracts functions from Python modules
 - Analyzes each function using a local LLM (llama.cpp)
 - Supports both single files and entire directories
@@ -65,19 +65,19 @@ That's it! The `download-model` command will show you available models, download
 
 ## Performance Checks
 
-LoopSleuth includes 8 built-in performance checks:
+LoopSleuth includes 8 built-in performance checks (from `loopsleuth.toml`):
 
 ### General Performance
 1. **quadratic** - Detects O(n²) or worse time complexity (nested loops, etc.)
 2. **linear-in-loop** - Detects hidden O(n) operations in loops (`x in list`, `.remove()`, `.index()`)
-3. **n-plus-one** - Detects repeated expensive operations in loops (file I/O, network, model loading)
-4. **expensive-sort-key** - Detects O(n) key functions in sort/sorted operations
-5. **unbounded-alloc** - Detects growing allocations in loops (string concat, repeated cat)
-6. **growing-container** - Detects loops that grow containers while iterating
+3. **expensive-sort-key** - Detects O(n) key functions in sort/sorted operations
+4. **unbounded-alloc** - Detects growing allocations in loops (string concat, repeated cat)
+5. **growing-container** - Detects loops that grow containers while iterating
 
 ### ML-Specific
-7. **conversion-churn** - Detects repeated CPU/GPU or tensor/array conversions in loops
-8. **ml-footguns** - Detects ML-specific issues (repeated tokenization, mask rebuilding)
+6. **conversion-churn** - Detects repeated CPU/GPU or tensor/array conversions in loops
+7. **python-loop-over-token-dimension** - Detects Python loops over token/sequence dimensions
+8. **mask-built-in-layer-loop** - Detects attention masks rebuilt inside per-layer loops
 
 ## Configuration
 
@@ -99,11 +99,13 @@ LoopSleuth looks for configuration in this order:
 ```toml
 [settings]
 # Optional: Set default CLI options (can be overridden by command-line flags)
-# Recommended: Use the 7B model for best accuracy
-model = "~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf"
-threads = 4
-max_tokens = 512
-context_size = 4096
+# Optional defaults (can be overridden by CLI flags)
+# model = "~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf"
+# threads = 4
+# max_tokens = 1024
+# context_size = 4096
+# skip_large = 0
+# cache_dir = ".loopsleuth_cache"
 
 [[check]]
 key = "my-custom-check"
@@ -187,12 +189,12 @@ loopsleuth download
 
 **Recommended models**:
 - **Qwen2.5-Coder (7B)** ⭐ - Best for code analysis, excellent accuracy (~4.7GB)
-- **Qwen2.5-Coder (3B)** - Faster but less accurate; not recommended for n-plus-one check (~2GB)
+- **Qwen2.5-Coder (3B)** - Faster but less accurate (~2GB)
 - **Devstral Small 2 (24B)** - Highest accuracy, requires more RAM (~15GB)
 - **Qwen2.5 (3B)** - General purpose, good balance (~2GB)
 - **Qwen2.5 (0.5B)** - Very fast, lower accuracy (~400MB)
 
-The interactive download command will guide you through selecting and downloading the best model for your needs. **Note:** The 7B model provides significantly better results than the 3B model, especially for detecting N+1 problems and generating accurate code fixes.
+The interactive download command will guide you through selecting and downloading the best model for your needs. **Note:** The 7B model provides significantly better results than the 3B model, especially for tougher ML-specific checks and generating accurate code fixes.
 
 ## Building from Source
 
@@ -259,7 +261,7 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --checks quadratic,linear-in
 
 Run all checks except specific ones:
 ```bash
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,ml-footguns
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,mask-built-in-layer-loop
 ```
 
 **Note**: By default, all 8 checks are run. Use `--checks` to select specific checks or `--exclude` to skip certain checks.
@@ -281,7 +283,7 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,m
 
 #### LLM Options
 - `-t, --threads <THREADS>` - Number of threads for inference (default: 4)
-- `--max-tokens <MAX_TOKENS>` - Maximum tokens to generate (default: 512)
+- `--max-tokens <MAX_TOKENS>` - Maximum tokens to generate (default: 1024)
 - `--context-size <SIZE>` - Context window size in tokens (default: 4096)
 - `-v, --verbose` - Show verbose llama.cpp output (useful for debugging)
 
@@ -320,7 +322,7 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --checks quadratic,linear-in-loop
 
 # Run all except ML-specific checks
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --exclude conversion-churn,ml-footguns
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --exclude conversion-churn,mask-built-in-layer-loop
 
 # Full analysis in terminal
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --details
@@ -416,9 +418,9 @@ Sample output:
      - **Stage 1 - Detection**: Constructs a check-specific prompt asking the LLM to analyze for that issue
      - Runs inference using llama.cpp to identify the issue
      - **Stage 2 - Solution**: If issue detected, makes a second LLM call to:
-       - Explain why the code has this issue
-       - Propose specific optimization strategies
-       - Provide optimized code examples
+       - Return a complete updated function (not a diff)
+       - Preserve the original function signature
+       - Make the smallest safe change to fix the issue
      - **Cache Storage**: Stores analysis results in SQLite with composite key (function_hash, check_key)
 6. **Reporting**: Displays findings grouped by function, showing all detected issues with solutions
 
@@ -452,26 +454,26 @@ The intelligent caching system provides significant benefits:
 ### Performance Issues
 - **Quadratic complexity**: Nested loops, repeated linear operations
 - **Linear-in-loop**: `x in list`, `.remove()`, `.index()`, `.pop(0)` in loops
-- **N+1 problem**: File I/O, network calls, model loading in loops
 - **Expensive sort keys**: O(n) key functions in sorting
 - **Unbounded allocations**: String concatenation, repeated concatenation in loops
 - **Growing containers**: Appending to lists while iterating
 
 ### ML-Specific Issues
 - **Conversion churn**: Repeated `.cpu()`, `.cuda()`, `.numpy()` conversions
-- **ML anti-patterns**: Repeated tokenization, mask rebuilding, Python loops over tensors
+- **ML loop over tokens**: Python loops over token/sequence dimensions
+- **Mask rebuilt in loop**: Attention masks rebuilt inside per-layer loops
 
 ## Model Recommendations
 
 | Model | Size | Speed | Accuracy | Best For |
 |-------|------|-------|----------|----------|
 | **Qwen2.5-Coder (7B)** ⭐ | ~4.7GB | Fast | Excellent | **Recommended** - Best accuracy, minimal false positives |
-| Qwen2.5-Coder (3B) | ~2GB | Fast | Good | Faster but less accurate (not recommended for n-plus-one) |
+| Qwen2.5-Coder (3B) | ~2GB | Fast | Good | Faster but less accurate |
 | Devstral Small 2 (24B) | ~15GB | Slower | Excellent | Production, very detailed analysis |
 | Qwen2.5 (3B) | ~2GB | Fast | Good | General purpose |
 | Qwen2.5 (0.5B) | ~400MB | Very Fast | Fair | Quick checks, testing |
 
-**Note:** The 7B model eliminates most false positives seen with the 3B model, especially for N+1 detection. It also generates more accurate code diffs and solutions.
+**Note:** The 7B model eliminates most false positives seen with the 3B model and generates more accurate code diffs and solutions.
 
 ## Performance
 
