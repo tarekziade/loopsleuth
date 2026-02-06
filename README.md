@@ -2,6 +2,37 @@
 
 A Rust-based CLI tool that analyzes Python code for performance issues using local LLM inference.
 
+## Why LLM-based analysis?
+
+Traditional AST-based static analyzers can detect syntactic loop patterns
+(nested `for` loops, `.append()` in loops, `.cpu()` inside `for`) very fast —
+scanning thousands of files in seconds — but they hit a hard ceiling: they
+can't understand *what code means*.
+
+LoopSleuth's LLM-based approach fills three gaps that pure AST cannot:
+
+(1) **semantic variable understanding** — recognizing that a loop variable like
+`cu_seqlens` represents sequence-length boundaries, making the loop a
+token-dimension iteration that should be vectorized, even though the AST just
+sees a generic `for` loop;
+
+(2) **implicit loop detection** — understanding that a function called once per
+transformer layer via `nn.ModuleList` or once per generated token inside
+`generate()` is effectively inside a hot loop, even though no syntactic loop
+encloses it; and
+
+(3) **intent-aware confidence** — reading the actual code to determine that 94%
+of functions are genuinely clean rather than producing hundreds of
+low-confidence findings that require manual triage. The tradeoff is speed:
+LoopSleuth analyzes ~5-10 functions per minute on an Apple M5 with the 7B model,
+versus thousands per second for static tools, making it best used as a
+deep-analysis pass on files already identified as hotspots by a fast static
+pre-scan.
+
+Of course the largest the GPU is, the fastest LoopSleuth will be. But the
+goal of the LoopSleuth experiment is to restrain its usage to local LLM on
+modern hardware anyone can buy.
+
 ## Installation
 
 Get started in 3 commands:
