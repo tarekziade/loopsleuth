@@ -255,7 +255,7 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,m
 - `-v, --verbose` - Show verbose llama.cpp output (useful for debugging)
 
 #### Output Options
-- `-o, --output <FILE>` - Save analysis report to markdown file
+- `-o, --output <FILE>` - Save analysis report to HTML file
 - `-d, --details` - Show detailed report in stdout (always included in file output)
 - `--skip-large <N>` - Skip functions larger than N lines (0 = no limit)
 
@@ -295,7 +295,7 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --excl
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --details
 
 # Save detailed report to file
-loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --output report.md
+loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./tests/checks/quadratic.py --output report.html
 ```
 
 **For developers**: If you're building from source, use `cargo run --release --` instead of `loopsleuth`, or use `make example`.
@@ -321,8 +321,8 @@ Each function with issues includes:
 
 **Perfect for:** Deep analysis, learning, immediate review
 
-### With --output FILE: Save Markdown Report
-Generate a complete markdown file that can be:
+### With --output FILE: Save HTML Report
+Generate a complete HTML file that can be:
 - Committed to your repository
 - Attached to pull requests
 - Shared in code reviews

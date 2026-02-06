@@ -134,13 +134,13 @@ jobs:
 
       - name: Run Analysis
         run: |
-          loopsleuth -m models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./src --output report.md
+          loopsleuth -m models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./src --output report.html
 
       - name: Upload Report
         uses: actions/upload-artifact@v3
         with:
           name: performance-report
-          path: report.md
+          path: report.html
 ```
 
 ### Pre-commit Hook

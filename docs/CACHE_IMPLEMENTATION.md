@@ -116,7 +116,7 @@ Added three new command-line flags:
    - Helps verify cache is working correctly
 
 3. **Report Generation**
-   - Includes cache statistics in markdown output
+   - Includes cache statistics in HTML output
    - Shows per-check cache effectiveness
 
 ## Performance Impact

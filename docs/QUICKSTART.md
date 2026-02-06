@@ -85,7 +85,7 @@ loopsleuth -m <model> ./src --checks quadratic,linear-in-loop
 loopsleuth -m <model> ./src --details
 
 # Save report to file
-loopsleuth -m <model> ./src --output report.md
+loopsleuth -m <model> ./src --output report.html
 
 # Show all options
 loopsleuth --help
@@ -219,7 +219,7 @@ repos:
     loopsleuth download-model  # Interactive input needed, or use hf CLI
 
 - name: Run Analysis
-  run: loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --output report.md
+  run: loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --output report.html
 ```
 
 ### VS Code Task

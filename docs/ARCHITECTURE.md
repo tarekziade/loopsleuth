@@ -50,7 +50,7 @@ LoopSleuth is a CLI tool that combines static analysis (AST parsing) with LLM-ba
 - **Three output modes**:
   - Default: Concise summary showing issues grouped by function
   - `--details`: Full analysis with code and solutions for all issues per function
-  - `--output FILE`: Save complete markdown report
+  - `--output FILE`: Save complete HTML report
 - Groups results by file when analyzing directories
 - Shows all issues detected for each function
 - Shows file paths with line numbers (for IDE navigation)
@@ -121,7 +121,7 @@ Python Files/Directories
     ↓
 [If --details: Print Full Report] ← All issues with solutions
     ↓
-[If --output: Save Markdown File] ← Complete report
+[If --output: Save HTML File] ← Complete report
 ```
 
 ## LLM Prompting Strategy
@@ -199,7 +199,7 @@ LoopSleuth/
 - Perfect for CI/CD pipelines and daily checks
 
 ### Detailed Report (--details flag)
-- Full markdown-formatted analysis in terminal
+- Full HTML-formatted analysis in terminal
 - Includes for each quadratic function:
   - Original source code
   - Complexity analysis
@@ -207,7 +207,7 @@ LoopSleuth/
 - Perfect for learning and immediate review
 
 ### File Output (--output flag)
-- Generates timestamped markdown file
+- Generates timestamped HTML file
 - Always includes full details regardless of --details flag
 - Ready for:
   - Code review attachments
