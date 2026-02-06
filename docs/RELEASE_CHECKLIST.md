@@ -13,9 +13,11 @@
 
 ## Release Process
 
-### 0. bump version in `pyproject.toml`, respect semantic versioning (you can ask if its minor or patch)
+### 1. bump version in `pyproject.toml` and `Cargo.toml` respect semantic versioning (you can ask if its minor or patch)
 
-### 1. Create a Git Tag
+### 2. Read all changes since last tag and create a new docs/RELEASE_NOTES_X.md, inspired from previous ones.
+
+### 3. Create a Git Tag
 ```bash
 # Make sure all changes are committed
 git status
@@ -25,13 +27,13 @@ git tag -a v0.1.0 -m "Release version 0.1.0"
 git push origin v0.1.0
 ```
 
-### 2. Create GitHub Release
+### 4. Create GitHub Release
 
 - [ ] check in git logs all changes since last release
 - [ ] build release notes and save them in a docs/RELEASE_NOTES_0.1.0.md
 - [ ] use `gh release create v0.1.0 --title "v0.1.0" --notes-file docs/RELEASE_NOTES_0.1_0.md`
 
-### 3. Automatic Publishing
+### 5. Automatic Publishing
 - GitHub Actions will automatically:
   - Build wheels for Linux, macOS (Intel & ARM), and Windows
   - Build source distribution
