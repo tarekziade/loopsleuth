@@ -19,6 +19,7 @@
 # context_size = 4096                                         # Context window size
 # skip_large = 0                                              # Skip functions larger than N lines
 # cache_dir = ".loopsleuth_cache"                             # Cache directory path
+# api_url = "https://your-endpoint.aws.endpoints.huggingface.cloud"  # HF Inference Endpoint (uses HF_TOKEN env var)
 
 # =========================
 # Dedupe rules
@@ -374,11 +375,19 @@ detection_rules = """Only flag if:
 - The loop body indexes the tensor by the loop variable (e.g., tensor[i], tensor[:, i])
 - This is likely a vectorization opportunity over the token/sequence dimension
 
+You must be able to point to BOTH:
+- the exact Python `for`/`while` loop header
+- the exact tensor indexing expression that uses that loop variable
+
+If there is no explicit Python loop, output OK.
+
 DO NOT flag:
 - Loops over layers/experts (architectural)
 - Loops for batching multiple sequences
 - Single-use initialization code
 - Loops over Python lists of images/batches (not token dimension)
+- Fixed small loops such as `for i in range(2)` or loops over `ndim`
+- Vectorized tensor ops like `reshape`, `view`, `permute`, `unfold`, `gather`, `masked_scatter`, `nonzero`
 """
 
 fix_recipes = """Prefer minimal safe improvement:
@@ -399,7 +408,11 @@ detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
 [check.guard]
-require_any = [".shape", ".shape["]
+require_any = ["for ", "while "]
+require_regex_any = [
+  'for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+range\(\s*[^)]*(?:seq_len|seq_length|sequence_length|num_tokens|n_tokens|tokens|\.shape\[\s*1\s*\])',
+  'while\s+[A-Za-z_][A-Za-z0-9_]*\s*<\s*[^:\n]*(?:seq_len|seq_length|sequence_length|num_tokens|n_tokens|tokens)'
+]
 
 
 
@@ -416,11 +429,18 @@ detection_rules = """Only flag if:
 - The same mask could be created once before the loop
 - Operations like torch.tril, torch.ones used for causal mask
 
+You must be able to point to BOTH:
+- the exact loop over layers/blocks
+- the exact mask-construction line inside that same loop body
+
+If the mask is created once before the loop and only reused inside the loop, output OK.
+
 DO NOT flag:
 - Mask used once (not in loop)
 - Dynamic masks that change per iteration
 - Mask creation outside loops
 - Loops that are not over layers/blocks
+- Passing an already-built `attention_mask` into each decoder layer
 """
 
 fix_recipes = """A) Invariant mask creation inside layer loop:
@@ -440,7 +460,60 @@ detection_prompt = "{template:detection_basis}"
 solution_prompt  = "{template:solution_basis}"
 verifier_prompt  = "{template:verifier_basis}"
 [check.guard]
-require_any = ["torch.tril(", "torch.triu(", "create_causal_mask("]
+require_any = ["for ", "while "]
+require_all = ["mask"]
+require_regex_all = [
+  'for\s+.*\s+in\s+.*\b(?:layer|layers|block|blocks)\b.*:',
+  '(?:torch\.tril\s*\(|torch\.ones\s*\(|create_causal_mask\s*\(|create_sliding_window_causal_mask\s*\(|create_bidirectional_mask\s*\()'
+]
+
+
+
+
+[[check]]
+key = "embedding-equality-scan"
+name = "Embedding Equality Scan"
+description = "Detects exact-equality scans over embeddings/tables to recover token ids or masks"
+category = "ml-specific"
+keyword = "EMBEDDING_EQUALITY_SCAN"
+
+detection_rules = """Only flag if:
+- Dense embedding vectors are compared with exact `==` against an embedding table or token embedding
+- The comparison is reduced with `.all(...)`, `.nonzero()`, or similar to infer token identity or a special-token mask
+- This is performing reverse lookup from embeddings instead of using ids/masks directly
+
+You must cite the exact equality expression and the exact reduction step that turns it into ids or a mask.
+
+DO NOT flag:
+- Normal embedding lookup from ids (e.g. `self.get_input_embeddings()(input_ids)`)
+- Dot products, cosine similarity, or matrix multiplies over embeddings
+- Equality checks on ids, masks, or scalar metadata
+- Approximate nearest-neighbor or similarity-based lookup logic
+"""
+
+fix_recipes = """Prefer API-level fixes over micro-optimizing the scan:
+
+A) Reverse lookup of `input_ids` from `inputs_embeds`:
+- Require callers to pass `input_ids` explicitly, or pass precomputed metadata such as `per_layer_inputs`
+- Remove exact-equality scans against `embed_tokens.weight`
+
+B) Recovering special-token masks from `inputs_embeds`:
+- Pass placeholder masks, token_type_ids, or original `input_ids` alongside `inputs_embeds`
+- Compute masks from ids before replacing placeholders with embeddings
+
+Do NOT:
+- Replace exact-equality scans with nearest-neighbor search unless that behavior is explicitly intended by the model design.
+"""
+
+detection_prompt = "{template:detection_basis}"
+solution_prompt  = "{template:solution_basis}"
+verifier_prompt  = "{template:verifier_basis}"
+[check.guard]
+require_all = ["==", ".all("]
+require_regex_any = [
+  'embed_tokens\.weight',
+  'get_input_embeddings\s*\(\s*\)'
+]
 
 
 

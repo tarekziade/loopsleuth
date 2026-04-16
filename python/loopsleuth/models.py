@@ -44,6 +44,27 @@ MODELS = {
         "description": "Very fast, lower accuracy",
     },
     "6": {
+        "name": "Qwen3.5 (2B)",
+        "repo": "unsloth/Qwen3.5-2B-GGUF",
+        "filename": "Qwen3.5-2B-Q4_K_M.gguf",
+        "size": "~1.3GB",
+        "description": "Compact newer general-purpose alternative",
+    },
+    "7": {
+        "name": "Qwen3.5 (4B)",
+        "repo": "unsloth/Qwen3.5-4B-GGUF",
+        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+        "size": "~3GB",
+        "description": "Stronger compact alternative with better accuracy than 2B",
+    },
+    "8": {
+        "name": "Gemma 4 (E2B)",
+        "repo": "unsloth/gemma-4-E2B-it-GGUF",
+        "filename": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "size": "~3.1GB",
+        "description": "Good alternative for local reasoning and code analysis",
+    },
+    "9": {
         "name": "Custom model (provide Hugging Face URL)",
         "repo": "custom",
         "filename": "",
@@ -106,7 +127,7 @@ def download_model(choice: str, models_dir: Path) -> Optional[Path]:
     """Download the selected model using huggingface_hub.
 
     Args:
-        choice: User's choice (1-6)
+        choice: User's choice (1-9)
         models_dir: Directory to download to
 
     Returns:
@@ -198,7 +219,7 @@ def interactive_download() -> Optional[Path]:
 
     # Get user choice
     try:
-        choice = input("Enter choice (1-6, 0 to exit) [1]: ").strip()
+        choice = input("Enter choice (1-9, 0 to exit) [1]: ").strip()
         if not choice:
             choice = "1"  # Default to recommended model
 

@@ -2,6 +2,22 @@
 	run example \
 	golden-update golden-verify test-regression test-bootstrap test-pip-install lint-yaml
 
+EXAMPLE_MODEL_CANDIDATES = \
+	$(HOME)/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf \
+	./models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf \
+	$(HOME)/.loopsleuth/models/Qwen3.5-4B-Q4_K_M.gguf \
+	./models/Qwen3.5-4B-Q4_K_M.gguf \
+	$(HOME)/.loopsleuth/models/Qwen3.5-2B-Q4_K_M.gguf \
+	./models/Qwen3.5-2B-Q4_K_M.gguf \
+	$(HOME)/.loopsleuth/models/gemma-4-E2B-it-Q4_K_M.gguf \
+	./models/gemma-4-E2B-it-Q4_K_M.gguf \
+	$(HOME)/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+	./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+	$(HOME)/.loopsleuth/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+	./models/qwen2.5-3b-instruct-q4_k_m.gguf
+
+GOLDEN_TEST_MODEL ?= $(HOME)/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf
+
 help:
 	@echo "LoopSleuth - Python Performance Analyzer"
 	@echo ""
@@ -60,19 +76,19 @@ clean:
 	cargo clean
 
 example: release
-	@if [ -f "$(HOME)/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf" ]; then \
-		./target/release/loopsleuth --model $(HOME)/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks/quadratic.py; \
-	elif [ -f "./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf" ]; then \
-		./target/release/loopsleuth --model ./models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./tests/checks/quadratic.py; \
-	elif [ -f "$(HOME)/.loopsleuth/models/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then \
-		./target/release/loopsleuth --model $(HOME)/.loopsleuth/models/qwen2.5-3b-instruct-q4_k_m.gguf ./tests/checks/quadratic.py; \
-	elif [ -f "./models/qwen2.5-3b-instruct-q4_k_m.gguf" ]; then \
-		./target/release/loopsleuth --model ./models/qwen2.5-3b-instruct-q4_k_m.gguf ./tests/checks/quadratic.py; \
-	else \
+	@model=""; \
+	for candidate in $(EXAMPLE_MODEL_CANDIDATES); do \
+		if [ -f "$$candidate" ]; then \
+			model="$$candidate"; \
+			break; \
+		fi; \
+	done; \
+	if [ -z "$$model" ]; then \
 		echo "No model found in ~/.loopsleuth/models/ or ./models/"; \
-		echo "Run 'loopsleuth download-model' to download a model"; \
+		echo "Run 'loopsleuth download-model' or './setup.sh' to download a model"; \
 		exit 1; \
-	fi
+	fi; \
+	./target/release/loopsleuth --model "$$model" ./tests/checks/quadratic.py
 
 run: release
 	@echo "Usage: make run MODEL=<path> PATH=<python_path>"
@@ -83,11 +99,11 @@ run: release
 	./target/release/loopsleuth --model $(MODEL) $(PATH)
 
 golden-update:
-	LOOPSLEUTH_TEST_MODEL=$(HOME)/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf \
+	LOOPSLEUTH_TEST_MODEL=$(GOLDEN_TEST_MODEL) \
 		python3 tests/run_checks.py --update-golden
 
 golden-verify:
-	LOOPSLEUTH_TEST_MODEL=$(HOME)/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf \
+	LOOPSLEUTH_TEST_MODEL=$(GOLDEN_TEST_MODEL) \
 		python3 tests/run_checks.py
 
 test-regression:

@@ -129,21 +129,22 @@ Python Files/Directories
 ### Multi-Check Architecture
 Each check has independent prompts tailored to detect specific issues:
 
-#### Detection Prompts (8 checks)
+#### Detection Prompts (9 checks)
 1. **quadratic**: Detects O(n²) patterns, looks for "QUADRATIC" keyword
 2. **linear-in-loop**: Detects `x in list`, `.remove()`, etc., looks for "LINEAR_IN_LOOP" keyword
-3. **n-plus-one**: Detects repeated I/O/network/model loading, looks for "N_PLUS_ONE" keyword
-4. **expensive-sort-key**: Detects O(n) sort key functions, looks for "EXPENSIVE_SORT_KEY" keyword
-5. **unbounded-alloc**: Detects string concat/array growth in loops, looks for "UNBOUNDED_ALLOC" keyword
-6. **conversion-churn**: Detects repeated tensor/device conversions, looks for "CONVERSION_CHURN" keyword
-7. **ml-footguns**: Detects ML-specific anti-patterns, looks for "ML_FOOTGUN" keyword
-8. **growing-container**: Detects growing while iterating, looks for "GROWING_CONTAINER" keyword
+3. **expensive-sort-key**: Detects O(n) sort key functions, looks for "EXPENSIVE_SORT_KEY" keyword
+4. **unbounded-alloc**: Detects string concat/array growth in loops, looks for "UNBOUNDED_ALLOC" keyword
+5. **conversion-churn**: Detects repeated tensor/device conversions, looks for "CONVERSION_CHURN" keyword
+6. **python-loop-over-token-dimension**: Detects Python token loops, looks for "ML_LOOP_OVER_TOKENS" keyword
+7. **mask-built-in-layer-loop**: Detects attention masks rebuilt in layer loops, looks for "ML_MASK_IN_LOOP" keyword
+8. **embedding-equality-scan**: Detects exact-equality scans over embeddings/tables, looks for "EMBEDDING_EQUALITY_SCAN" keyword
+9. **growing-container**: Detects growing while iterating, looks for "GROWING_CONTAINER" keyword
 
 - Each prompt is check-specific with targeted examples
 - Uses ChatML format (`<|im_start|>` tags)
 - Requests specific keyword in response for easy parsing
 
-#### Solution Prompts (8 checks)
+#### Solution Prompts (9 checks)
 - Only called if issue detected
 - Check-specific solution strategies
 - Requests:

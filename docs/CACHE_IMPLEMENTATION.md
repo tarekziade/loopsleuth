@@ -6,9 +6,9 @@ LoopSleuth uses a local SQLite-based caching system with **multi-check support**
 
 ## Multi-Check Architecture
 
-With 8 performance checks, the cache stores results separately for each check. This means:
-- A single function with 8 checks generates 8 cache entries
-- Changing a function invalidates all 8 cache entries for that function
+With 9 performance checks, the cache stores results separately for each check. This means:
+- A single function with 9 checks generates 9 cache entries
+- Changing a function invalidates all 9 cache entries for that function
 - Adding/removing checks only affects those specific cache entries
 - Cache hits can be partial (some checks cached, others need analysis)
 
@@ -75,7 +75,7 @@ Located in `src/main.rs`, the cache implementation includes:
    - Default location: `.loopsleuth_cache/analysis_cache.db`
    - Configurable via `--cache-dir` flag
    - Persistent across runs
-   - Example: 100 functions × 8 checks = 800 cache entries
+  - Example: 100 functions × 9 checks = 900 cache entries
 
 3. **Cache Flow** (per function, per check):
    ```
@@ -124,29 +124,29 @@ Added three new command-line flags:
 ### Speed Improvements
 
 - **Cached check retrieval**: <10ms (vs 5-10 seconds for LLM call)
-- **Second run on 100 functions, all 8 checks**: ~10-20 seconds (vs 40-60 minutes)
+- **Second run on 100 functions, all 9 checks**: ~10-20 seconds (vs 45-70 minutes)
 - **Incremental run (95% cached)**: ~2-5 minutes (vs 40-60 minutes)
 - **Single check (quadratic) on 100 functions**: ~10 minutes first run, ~10 seconds cached
 
 ### Example Speedup
 
-First run (cold cache, all 8 checks):
+First run (cold cache, all 9 checks):
 ```
 📊 Total functions analyzed: 100
-🔍 Checks run: 8 (quadratic, linear-in-loop, n-plus-one, ...)
+🔍 Checks run: 9 (quadratic, linear-in-loop, expensive-sort-key, ...)
 ⚠️  Functions with issues: 60
 ✓  Functions clean: 40
-💾 Cache entries: 800 (expected: 800 = 100 functions × 8 checks), 300 with issues
-Time: ~40-60 minutes
+💾 Cache entries: 900 (expected: 900 = 100 functions × 9 checks), 300 with issues
+Time: ~45-70 minutes
 ```
 
 Second run (warm cache, no changes):
 ```
 📊 Total functions analyzed: 100
-🔍 Checks run: 8 (quadratic, linear-in-loop, n-plus-one, ...)
+🔍 Checks run: 9 (quadratic, linear-in-loop, expensive-sort-key, ...)
 ⚠️  Functions with issues: 60
 ✓  Functions clean: 40
-💾 Cache entries: 800 (expected: 800 = 100 functions × 8 checks), 300 with issues
+💾 Cache entries: 900 (expected: 900 = 100 functions × 9 checks), 300 with issues
 Time: ~10-20 seconds (100x faster!)
 ```
 

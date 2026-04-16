@@ -1,6 +1,6 @@
 # LoopSleuth
 
-A Rust-based CLI tool that analyzes Python code for performance issues using local LLM inference.
+A Rust-based CLI tool that analyzes Python code for performance issues using LLM inference -- locally via llama.cpp or remotely via HF Inference Endpoints.
 
 ## Why LLM-based analysis?
 
@@ -50,22 +50,33 @@ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
 
 That's it! The `download-model` command will show you available models, download your choice to `~/.loopsleuth/models/`, and show you how to use it.
 
+### Using a HF Inference Endpoint
+
+Instead of running a local model, you can use a remote [HF Inference Endpoint](https://huggingface.co/docs/inference-endpoints):
+
+```bash
+export HF_TOKEN="hf_..."
+loopsleuth --api-url https://your-endpoint.aws.endpoints.huggingface.cloud ./src
+```
+
+No `--model` or local GPU required. The endpoint must serve an OpenAI-compatible API (`/v1/chat/completions`). LoopSleuth auto-discovers the model from `/v1/models`. See the [Quick Start Guide](docs/QUICKSTART.md) for more details.
+
 **Quick Start Guide**: See [docs/QUICKSTART.md](docs/QUICKSTART.md) for a complete walkthrough.
 
 ## Features
 
 - **Fully Configurable**: Define checks, customize prompts, and set defaults via TOML configuration file
-- **8 Built-in Performance Checks**: Detects multiple types of performance issues beyond just quadratic complexity
+- **9 Built-in Performance Checks**: Detects multiple types of performance issues beyond just quadratic complexity
 - Parses Python code using RustPython's parser
 - Extracts functions from Python modules
-- Analyzes each function using a local LLM (llama.cpp)
+- Analyzes each function using a local LLM (llama.cpp) or a remote HF Inference Endpoint
 - Supports both single files and entire directories
 - **Intelligent caching** - Uses SQLite to cache analysis results per check, avoiding redundant LLM calls for unchanged functions
 - **Flexible check selection** - Run all checks, specific checks, or exclude certain checks
 
 ## Performance Checks
 
-LoopSleuth includes 8 built-in performance checks (from `loopsleuth.toml`):
+LoopSleuth includes 9 built-in performance checks (from `loopsleuth.toml`):
 
 ### General Performance
 1. **quadratic** - Detects O(n²) or worse time complexity (nested loops, etc.)
@@ -78,6 +89,7 @@ LoopSleuth includes 8 built-in performance checks (from `loopsleuth.toml`):
 6. **conversion-churn** - Detects repeated CPU/GPU or tensor/array conversions in loops
 7. **python-loop-over-token-dimension** - Detects Python loops over token/sequence dimensions
 8. **mask-built-in-layer-loop** - Detects attention masks rebuilt inside per-layer loops
+9. **embedding-equality-scan** - Detects exact-equality scans over embeddings/tables to recover ids or masks
 
 ## Configuration
 
@@ -106,6 +118,7 @@ LoopSleuth looks for configuration in this order:
 # context_size = 4096
 # skip_large = 0
 # cache_dir = ".loopsleuth_cache"
+# api_url = "https://your-endpoint.aws.endpoints.huggingface.cloud"  # Use API instead of local model
 
 [[check]]
 key = "my-custom-check"
@@ -190,6 +203,9 @@ loopsleuth download
 **Recommended models**:
 - **Qwen2.5-Coder (7B)** ⭐ - Best for code analysis, excellent accuracy (~4.7GB)
 - **Qwen2.5-Coder (3B)** - Faster but less accurate (~2GB)
+- **Qwen3.5 (2B)** - Compact newer general-purpose alternative (~1.3GB)
+- **Qwen3.5 (4B)** - Stronger compact alternative with better accuracy than 2B (~3GB)
+- **Gemma 4 (E2B)** - Strong local reasoning and code analysis alternative (~3.1GB)
 - **Devstral Small 2 (24B)** - Highest accuracy, requires more RAM (~15GB)
 - **Qwen2.5 (3B)** - General purpose, good balance (~2GB)
 - **Qwen2.5 (0.5B)** - Very fast, lower accuracy (~400MB)
@@ -264,7 +280,7 @@ Run all checks except specific ones:
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src --exclude conversion-churn,mask-built-in-layer-loop
 ```
 
-**Note**: By default, all 8 checks are run. Use `--checks` to select specific checks or `--exclude` to skip certain checks.
+**Note**: By default, all 9 checks are run. Use `--checks` to select specific checks or `--exclude` to skip certain checks.
 
 ### Options
 
@@ -409,7 +425,7 @@ Sample output:
 1. **File Discovery**: Walks through the specified path to find all `.py` files
 2. **Parsing**: Uses RustPython's parser to build an AST
 3. **Function Extraction**: Extracts all function definitions (including class methods)
-4. **Check Selection**: Determines which checks to run based on CLI flags (default: all 8 checks)
+4. **Check Selection**: Determines which checks to run based on CLI flags (default: all 9 checks)
 5. **For each function, run all selected checks**:
    - **Cache Check**: Computes SHA256 hash of function source code + check key and checks SQLite cache
      - **Cache Hit**: Instantly returns cached analysis results (shown with 💾 icon)
@@ -436,7 +452,7 @@ The intelligent caching system provides significant benefits:
 - **Zero Configuration**: Works automatically - just run the tool
 
 **Example speed improvement:**
-- First run on 100 functions with 8 checks: ~40-60 minutes
+- First run on 100 functions with 9 checks: ~45-70 minutes
 - Second run (all cached): ~10-20 seconds
 - Incremental run (95% cached): ~2-5 minutes
 - Single check (quadratic only): ~5-8 minutes first run, instant when cached
@@ -469,6 +485,9 @@ The intelligent caching system provides significant benefits:
 |-------|------|-------|----------|----------|
 | **Qwen2.5-Coder (7B)** ⭐ | ~4.7GB | Fast | Excellent | **Recommended** - Best accuracy, minimal false positives |
 | Qwen2.5-Coder (3B) | ~2GB | Fast | Good | Faster but less accurate |
+| Qwen3.5 (2B) | ~1.3GB | Fast | Good | Compact general-purpose alternative |
+| Qwen3.5 (4B) | ~3GB | Fast | Good | Stronger compact alternative |
+| Gemma 4 (E2B) | ~3.1GB | Fast | Good | Strong alternative for local analysis |
 | Devstral Small 2 (24B) | ~15GB | Slower | Excellent | Production, very detailed analysis |
 | Qwen2.5 (3B) | ~2GB | Fast | Good | General purpose |
 | Qwen2.5 (0.5B) | ~400MB | Very Fast | Fair | Quick checks, testing |
@@ -482,7 +501,7 @@ The intelligent caching system provides significant benefits:
   - Detection: ~2-5 seconds
   - Solution proposal: ~3-8 seconds
   - **Cached retrieval: <10ms (instant!)**
-- Running all 8 checks: ~8x time compared to single check (but only on first run - subsequent runs use cache)
+- Running all 9 checks: ~9x time compared to single check (but only on first run - subsequent runs use cache)
 - The tool processes functions sequentially to manage memory
 - Larger models (24B) provide more detailed and accurate analysis but require more RAM
 - **Cache dramatically improves repeated runs**: Second analysis on same codebase is ~100x faster
@@ -510,7 +529,7 @@ loopsleuth --skip-large 300 -m ~/.loopsleuth/models/qwen*.gguf ./code
 
 **This is normal**:
 - Each function requires 2 LLM calls per check (detection + solution) if issue found
-- With all 8 checks: expect ~40-80 seconds per function on first run (depending on issues found)
+- With all 9 checks: expect ~45-90 seconds per function on first run (depending on issues found)
 - With single check: expect ~5-10 seconds per function with 3B model
 - Progress bar shows real-time status with check name and function name
 - Second run is instant if code hasn't changed (cache hit)

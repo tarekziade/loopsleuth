@@ -40,7 +40,7 @@ This will:
 3. Download it to `~/.loopsleuth/models/`
 4. Show you how to use it
 
-**Recommended model**: Qwen2.5-Coder (3B) - Best balance of speed and accuracy for code analysis.
+**Recommended model**: Qwen2.5-Coder (7B) - Best accuracy and lowest false-positive rate for code analysis.
 
 ### Alternative: Download with huggingface-cli
 
@@ -49,8 +49,8 @@ This will:
 pip install huggingface_hub
 
 # Download recommended model
-huggingface-cli download Qwen/Qwen2.5-Coder-3B-Instruct-GGUF \
-    qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+huggingface-cli download unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF \
+    Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf \
     --local-dir ~/.loopsleuth/models
 ```
 
@@ -60,13 +60,38 @@ Run LoopSleuth on your Python code:
 
 ```bash
 # Analyze a single file
-loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf my_script.py
+loopsleuth -m ~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf my_script.py
 
 # Analyze a whole directory
-loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./src
+loopsleuth -m ~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf ./src
 
 # With short model path (if in default location)
 loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./src
+```
+
+## Alternative: Use a HF Inference Endpoint (no local GPU needed)
+
+Instead of downloading a model, you can point LoopSleuth at a remote
+[HF Inference Endpoint](https://huggingface.co/docs/inference-endpoints)
+that serves an OpenAI-compatible API:
+
+```bash
+# Set your Hugging Face token
+export HF_TOKEN="hf_..."
+
+# Run analysis against the endpoint
+loopsleuth --api-url https://your-endpoint.aws.endpoints.huggingface.cloud ./src
+```
+
+No `--model` flag needed -- LoopSleuth auto-discovers the model served by the
+endpoint via `/v1/models`. The endpoint can run any chat model (Mistral, Qwen,
+Llama, etc.); the server handles chat template formatting.
+
+You can also set `api_url` in `loopsleuth.toml` so you don't have to pass it every time:
+
+```toml
+[settings]
+api_url = "https://your-endpoint.aws.endpoints.huggingface.cloud"
 ```
 
 ## Common Commands
@@ -97,7 +122,7 @@ Instead of typing the full model path every time:
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
-export LOOPSLEUTH_MODEL="$HOME/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
+export LOOPSLEUTH_MODEL="$HOME/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf"
 
 # Then use:
 loopsleuth -m $LOOPSLEUTH_MODEL ./src
@@ -107,7 +132,7 @@ Or create an alias:
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
-alias loopsleuth='loopsleuth -m ~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf'
+alias loopsleuth='loopsleuth -m ~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf'
 
 # Then just use:
 loopsleuth ./src
@@ -127,42 +152,57 @@ $ loopsleuth download-model
 
 Choose a model to download:
 
-1. Qwen2.5-Coder (3B) - Recommended ⭐ (~2GB)
+1. Qwen2.5-Coder (7B) - Recommended ⭐ (~4.7GB)
    Best for code analysis, excellent accuracy
 
-2. Devstral Small 2 (24B) (~15GB)
+2. Qwen2.5-Coder (3B) (~2GB)
+   Faster but less accurate on harder ML-specific checks
+
+3. Devstral Small 2 (24B) (~15GB)
    Highest accuracy, requires more RAM
 
-3. Qwen2.5 (3B) (~2GB)
+4. Qwen2.5 (3B) (~2GB)
    General purpose, good balance
 
-4. Qwen2.5 (0.5B) (~400MB)
+5. Qwen2.5 (0.5B) (~400MB)
    Very fast, lower accuracy
+
+6. Qwen3.5 (2B) (~1.3GB)
+   Compact newer general-purpose alternative
+
+7. Qwen3.5 (4B) (~3GB)
+   Stronger compact alternative with better accuracy than 2B
+
+8. Gemma 4 (E2B) (~3.1GB)
+   Good alternative for local reasoning and code analysis
+
+9. Custom model (provide Hugging Face URL) (varies)
+   Download from a custom Hugging Face repository
 
 0. Exit without downloading
 
-Enter choice (1-4, 0 to exit) [1]: 1
+Enter choice (1-9, 0 to exit) [1]: 1
 
-📥 Downloading Qwen2.5-Coder (3B) - Recommended ⭐...
-   Repository: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
-   File: qwen2.5-coder-3b-instruct-q4_k_m.gguf
-   Size: ~2GB
+📥 Downloading Qwen2.5-Coder (7B) - Recommended ⭐...
+   Repository: unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF
+   File: Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf
+   Size: ~4.7GB
    Destination: /Users/you/.loopsleuth/models
 
    This may take several minutes depending on your connection...
 
 ✅ Download complete!
-   Model saved to: /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf
+   Model saved to: /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf
 
 ============================================================
   LoopSleuth is ready! 🎉
 ============================================================
 
 Run analysis with:
-  loopsleuth -m /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf <path_to_python_code>
+  loopsleuth -m /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf <path_to_python_code>
 
 Example:
-  loopsleuth -m /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./my_project/
+  loopsleuth -m /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf ./my_project/
 
 $ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./my_project/
 
@@ -173,7 +213,7 @@ $ loopsleuth -m ~/.loopsleuth/models/qwen*.gguf ./my_project/
 ╚═══════════════════════════════╝
 
 📊 Total functions analyzed: 15
-🔍 Checks run: 8 (quadratic, linear-in-loop, n-plus-one, ...)
+🔍 Checks run: 9 (quadratic, linear-in-loop, expensive-sort-key, ...)
 ⚠️  Functions with issues: 3
 ✓  Functions clean: 12
 
@@ -206,7 +246,7 @@ repos:
         entry: loopsleuth
         language: system
         types: [python]
-        args: ["-m", "~/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf", "--checks", "quadratic"]
+        args: ["-m", "~/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf", "--checks", "quadratic"]
         pass_filenames: true
 ```
 

@@ -90,6 +90,10 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
 
+    /// URL of a HF Inference Endpoint (uses HF_TOKEN env var for auth)
+    #[arg(long, value_name = "URL")]
+    api_url: Option<String>,
+
     /// Print the default checks configuration to stdout and exit
     #[arg(long)]
     print_default_config: bool,
@@ -187,6 +191,15 @@ struct ConfigSettings {
     context_size: Option<u32>,
     skip_large: Option<usize>,
     cache_dir: Option<PathBuf>,
+    api_url: Option<String>,
+}
+
+/// Configuration for API-based inference
+struct ApiConfig {
+    client: reqwest::blocking::Client,
+    url: String,
+    token: Option<String>,
+    model_id: String,
 }
 
 /// Container for all check configurations
@@ -269,17 +282,26 @@ impl CheckConfig {
 
     /// Parse structured detection output
     /// Expected format: VERDICT: OK|{keyword}, CONFIDENCE: 0.0-1.0, DETAIL: text, END
+    /// Also handles: "{keyword}: confidence" format from some models
     fn parse_detection(&self, response: &str) -> ParsedDetection {
         let mut has_issue = false;
         let mut confidence: Option<f32> = None;
         let mut detail = String::new();
+        let keyword_upper = self.keyword.to_uppercase();
 
         for line in response.lines() {
             let trimmed = line.trim();
 
             if trimmed.starts_with("VERDICT:") {
                 let verdict = trimmed[8..].trim().to_uppercase();
-                has_issue = verdict == self.keyword.to_uppercase();
+                has_issue = verdict.starts_with(&keyword_upper);
+            } else if trimmed.to_uppercase().starts_with(&format!("{}:", keyword_upper)) {
+                // Handle "KEYWORD: confidence" format (e.g. "QUADRATIC: 0.99")
+                has_issue = true;
+                let after_keyword = &trimmed[self.keyword.len() + 1..];
+                if let Ok(val) = after_keyword.trim().parse::<f32>() {
+                    confidence = Some(val.clamp(0.0, 1.0));
+                }
             } else if trimmed.starts_with("CONFIDENCE:") {
                 if let Ok(val) = trimmed[11..].trim().parse::<f32>() {
                     confidence = Some(val.clamp(0.0, 1.0));
@@ -347,6 +369,9 @@ fn apply_config_settings(cli: &mut Cli, config: &ChecksConfig) {
     }
     if cli.cache_dir.is_none() {
         cli.cache_dir = settings.cache_dir.clone();
+    }
+    if cli.api_url.is_none() {
+        cli.api_url = settings.api_url.clone();
     }
 }
 
@@ -496,6 +521,217 @@ fn guard_skip_reason(check: &CheckConfig, func: &FunctionInfo) -> Result<Option<
     Ok(None)
 }
 
+fn leading_indent(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .count()
+}
+
+fn collect_indented_block<'a>(lines: &[&'a str], header_index: usize) -> Vec<&'a str> {
+    let header_indent = leading_indent(lines[header_index]);
+    let mut body = Vec::new();
+
+    for line in lines.iter().skip(header_index + 1) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            body.push(*line);
+            continue;
+        }
+
+        if leading_indent(line) <= header_indent {
+            break;
+        }
+
+        body.push(*line);
+    }
+
+    body
+}
+
+fn looks_like_token_dimension_expr(expr: &str) -> bool {
+    let expr_lower = expr.to_lowercase();
+    let shape_dim_one = Regex::new(r"\.shape\[\s*1\s*\]").expect("valid shape regex");
+
+    shape_dim_one.is_match(&expr_lower)
+        || expr_lower.contains("seq_len")
+        || expr_lower.contains("seq_length")
+        || expr_lower.contains("sequence_length")
+        || expr_lower.contains("num_tokens")
+        || expr_lower.contains("n_tokens")
+        || expr_lower.contains("token_count")
+        || expr_lower.contains("tokens")
+}
+
+fn body_indexes_by_loop_var(body_lines: &[&str], loop_var: &str) -> bool {
+    let index_pattern = format!(r"\[[^\]\n]*\b{}\b[^\]\n]*\]", regex::escape(loop_var));
+    let index_re = Regex::new(&index_pattern).expect("valid index regex");
+
+    body_lines.iter().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.starts_with('#') && index_re.is_match(line)
+    })
+}
+
+fn has_explicit_token_dimension_loop(text: &str) -> bool {
+    let for_loop_re = Regex::new(
+        r"^\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\(([^)]*)\)\s*:",
+    )
+    .expect("valid token-loop regex");
+    let while_loop_re = Regex::new(
+        r"^\s*while\s+([A-Za-z_][A-Za-z0-9_]*)\s*<\s*([^:\n]+)\s*:",
+    )
+    .expect("valid token-while regex");
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if let Some(caps) = for_loop_re.captures(line) {
+            let loop_var = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let range_expr = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if !looks_like_token_dimension_expr(range_expr) {
+                continue;
+            }
+
+            let body = collect_indented_block(&lines, idx);
+            if body_indexes_by_loop_var(&body, loop_var) {
+                return true;
+            }
+        }
+
+        if let Some(caps) = while_loop_re.captures(line) {
+            let loop_var = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let limit_expr = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if !looks_like_token_dimension_expr(limit_expr) {
+                continue;
+            }
+
+            let body = collect_indented_block(&lines, idx);
+            if body_indexes_by_loop_var(&body, loop_var) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn has_mask_built_inside_layer_loop(text: &str) -> bool {
+    let loop_re = Regex::new(r"^\s*for\s+.*\s+in\s+.*\b(?:layer|layers|block|blocks)\b.*:")
+        .expect("valid layer-loop regex");
+    let mask_builders = [
+        "torch.tril(",
+        "torch.ones(",
+        "create_causal_mask(",
+        "create_sliding_window_causal_mask(",
+        "create_bidirectional_mask(",
+    ];
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if !loop_re.is_match(line) {
+            continue;
+        }
+
+        let body = collect_indented_block(&lines, idx);
+        for body_line in body {
+            let trimmed = body_line.trim();
+            if trimmed.starts_with('#') {
+                continue;
+            }
+
+            let lower = trimmed.to_lowercase();
+            if lower.contains("mask")
+                && mask_builders.iter().any(|builder| lower.contains(builder))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn has_embedding_table_reverse_lookup(text: &str) -> bool {
+    let all_dim_three =
+        Regex::new(r"\.all\s*\(\s*dim\s*=\s*3\s*\)").expect("valid all(dim=3) regex");
+    let nonzero_re = Regex::new(r"\.nonzero\s*\(\s*\)").expect("valid nonzero regex");
+    let broadcast_index_re = Regex::new(r"\[\s*:\s*,\s*:\s*,\s*None\s*,\s*:\s*\]")
+        .expect("valid broadcast index regex");
+
+    text.contains("==")
+        && text.contains("embed_tokens.weight")
+        && broadcast_index_re.is_match(text)
+        && all_dim_three.is_match(text)
+        && nonzero_re.is_match(text)
+}
+
+fn has_special_token_embedding_mask_scan(text: &str) -> bool {
+    let all_last_dim =
+        Regex::new(r"\.all\s*\(\s*(?:dim\s*=\s*)?-1\s*\)").expect("valid all(-1) regex");
+    let get_input_embeddings_re = Regex::new(r"get_input_embeddings\s*\(\s*\)\s*\(")
+        .expect("valid get_input_embeddings regex");
+
+    text.contains("==")
+        && get_input_embeddings_re.is_match(text)
+        && text.contains("torch.tensor(")
+        && all_last_dim.is_match(text)
+}
+
+fn has_embedding_equality_scan(text: &str) -> bool {
+    has_embedding_table_reverse_lookup(text) || has_special_token_embedding_mask_scan(text)
+}
+
+fn embedding_equality_scan_detail(text: &str) -> Option<String> {
+    let mut details = Vec::new();
+
+    if has_embedding_table_reverse_lookup(text) {
+        details.push(
+            "Broadcast equality against embed_tokens.weight with .all(dim=3) and .nonzero() to recover token ids"
+                .to_string(),
+        );
+    }
+
+    if has_special_token_embedding_mask_scan(text) {
+        details.push(
+            "Exact equality against get_input_embeddings()(torch.tensor(...)) with .all(-1) to infer special-token masks"
+                .to_string(),
+        );
+    }
+
+    if details.is_empty() {
+        None
+    } else {
+        Some(details.join("; "))
+    }
+}
+
+fn rule_based_detection(check: &CheckConfig, func: &FunctionInfo) -> Option<String> {
+    match check.key.as_str() {
+        "embedding-equality-scan" => embedding_equality_scan_detail(&func.source_no_docstring)
+            .map(|detail| {
+                format!(
+                    "VERDICT: {}\nCONFIDENCE: 1.00\nDETAIL: {}\nEND",
+                    check.keyword, detail
+                )
+            }),
+        _ => None,
+    }
+}
+
+fn structural_skip_reason(check: &CheckConfig, func: &FunctionInfo) -> Option<String> {
+    match check.key.as_str() {
+        "python-loop-over-token-dimension" if !has_explicit_token_dimension_loop(&func.source_no_docstring) => {
+            Some("no explicit token-dimension Python loop".to_string())
+        }
+        "mask-built-in-layer-loop" if !has_mask_built_inside_layer_loop(&func.source_no_docstring) => {
+            Some("no mask construction inside layer/block loop".to_string())
+        }
+        "embedding-equality-scan" if !has_embedding_equality_scan(&func.source_no_docstring) => {
+            Some("no exact-equality embedding scan".to_string())
+        }
+        _ => None,
+    }
+}
+
 fn warn_missing_template_refs(
     check: &CheckConfig,
     templates: &std::collections::HashMap<String, String>,
@@ -605,8 +841,8 @@ fn list_all_checks(cli: &Cli) -> Result<()> {
     println!("  # Run specific checks only");
     println!("  loopsleuth -m model.gguf ./src --checks quadratic,linear-in-loop");
     println!();
-    println!("  # Run all except ML-specific checks");
-    println!("  loopsleuth -m model.gguf ./src --exclude conversion-churn,ml-footguns");
+    println!("  # Run all except selected ML-specific checks");
+    println!("  loopsleuth -m model.gguf ./src --exclude conversion-churn,mask-built-in-layer-loop");
     println!();
 
     Ok(())
@@ -958,6 +1194,350 @@ impl StdoutSuppressor {
     }
 }
 
+struct AnalysisOutput {
+    file_results: Vec<FileResults>,
+    total_functions: usize,
+    functions_with_issues: usize,
+    stats: TokenStats,
+}
+
+fn run_analysis_loop<F>(
+    python_files: &[PathBuf],
+    checks: &[CheckConfig],
+    cache: &AnalysisCache,
+    dedupe_rules: &[DedupeRule],
+    filter_function: Option<&str>,
+    skip_large: usize,
+    max_tokens: i32,
+    verbose: bool,
+    total_functions_count: usize,
+    generate_fn: &mut F,
+) -> Result<AnalysisOutput>
+where
+    F: FnMut(&str, i32, bool) -> Result<(String, bool, TokenStats)>,
+{
+    let mut all_file_results: Vec<FileResults> = Vec::new();
+    let mut total_functions = 0;
+    let mut current_func_num = 0;
+    let mut functions_with_issues = 0;
+    let mut total_stats = TokenStats::default();
+
+    for file_path in python_files {
+        let mut functions = extract_functions(&file_path)?;
+
+        if let Some(filter) = filter_function {
+            let filter_lower = filter.to_lowercase();
+            functions.retain(|func| func.name.to_lowercase().contains(&filter_lower));
+        }
+
+        let mut file_results = Vec::new();
+
+        for func in functions {
+            total_functions += 1;
+            current_func_num += 1;
+
+            let progress_pct = (current_func_num as f32 / total_functions_count as f32 * 100.0) as usize;
+            let bar_width = 30;
+            let filled = (current_func_num as f32 / total_functions_count as f32 * bar_width as f32) as usize;
+            let empty = bar_width - filled;
+            let progress_bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+            let filename = file_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            let func_display = if let Some(ref class_name) = func.class_name {
+                format!("{}::{}::{}", filename, class_name, func.name)
+            } else {
+                format!("{}::{}", filename, func.name)
+            };
+
+            if skip_large > 0 {
+                let line_count = func.source.lines().count();
+                if line_count > skip_large {
+                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⊗ Skipped: {} (too large)",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           functions_with_issues, func_display);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    continue;
+                }
+            }
+
+            let mut check_results = Vec::new();
+
+            for check in checks {
+                if let Some(reason) = guard_skip_reason(check, &func)? {
+                    let analysis = format!(
+                        "VERDICT: OK\nCONFIDENCE: 0.00\nDETAIL: Skipped by guard ({})\nEND",
+                        reason
+                    );
+                    let _ = cache.put(&func, &check.key, false, &analysis, None);
+                    check_results.push(CheckResult {
+                        check_key: check.key.to_string(),
+                        check_name: check.name.to_string(),
+                        has_issue: false,
+                        analysis,
+                        solution: None,
+                    });
+                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           functions_with_issues, check.key, func_display);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    continue;
+                }
+
+                if let Some(reason) = structural_skip_reason(check, &func) {
+                    let analysis = format!(
+                        "VERDICT: OK\nCONFIDENCE: 0.00\nDETAIL: Skipped by structural filter ({})\nEND",
+                        reason
+                    );
+                    let _ = cache.put(&func, &check.key, false, &analysis, None);
+                    check_results.push(CheckResult {
+                        check_key: check.key.to_string(),
+                        check_name: check.name.to_string(),
+                        has_issue: false,
+                        analysis,
+                        solution: None,
+                    });
+                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           functions_with_issues, check.key, func_display);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    continue;
+                }
+
+                if let Ok(Some(cached)) = cache.get(&func, &check.key) {
+                    check_results.push(CheckResult {
+                        check_key: check.key.to_string(),
+                        check_name: check.name.to_string(),
+                        has_issue: cached.has_issue,
+                        analysis: cached.analysis,
+                        solution: cached.solution,
+                    });
+                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💾 [{}] {}",
+                           progress_bar, progress_pct, current_func_num, total_functions_count,
+                           functions_with_issues, check.key, func_display);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    continue;
+                }
+
+                // Cache miss - run detection
+                let rule_based_analysis = rule_based_detection(check, &func);
+                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | {} [{}] {}",
+                       progress_bar, progress_pct, current_func_num, total_functions_count,
+                       functions_with_issues,
+                       if rule_based_analysis.is_some() { "⚙️" } else { "🔍" },
+                       check.key, func_display);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                let detection_result = if let Some(analysis) = rule_based_analysis {
+                    Ok(Ok((analysis, false, TokenStats::default())))
+                } else {
+                    let detection_prompt = check.format_detection_prompt(&func);
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        generate_fn(&detection_prompt, max_tokens, verbose)
+                    }))
+                };
+
+                let detection_result = match detection_result {
+                    Ok(res) => res,
+                    Err(_) => {
+                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💥 [{}] Error",
+                               progress_bar, progress_pct, current_func_num, total_functions_count,
+                               functions_with_issues, check.key);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        continue;
+                    }
+                };
+
+                match detection_result {
+                    Ok((analysis, _truncated, stats)) => {
+                        total_stats.add(&stats);
+                        let detection = check.parse_detection(&analysis);
+                        let has_issue = detection.has_issue;
+
+                        let enhanced_analysis = if let Some(conf) = detection.confidence {
+                            format!("{}\n[Confidence: {:.2}]", analysis, conf)
+                        } else {
+                            analysis.clone()
+                        };
+
+                        if has_issue {
+                            print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💡 [{}] Solution...",
+                                   progress_bar, progress_pct, current_func_num, total_functions_count,
+                                   functions_with_issues, check.key);
+                            std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                            let solution_prompt = check.format_solution_prompt(&func);
+                            let solution_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                generate_fn(&solution_prompt, max_tokens, verbose)
+                            }))
+                            .ok()
+                            .and_then(|r| r.ok());
+
+                            let solution_text = solution_result.as_ref().map(|(text, _truncated, _stats)| text.clone());
+
+                            if let Some((_text, _truncated, stats)) = solution_result {
+                                total_stats.add(&stats);
+                            }
+
+                            let optimized_and_diff = solution_text.as_ref()
+                                .and_then(|sol| {
+                                    let optimized = extract_optimized_function(sol)?;
+                                    if let Err(reason) = validate_optimization(&func.source_no_docstring, &optimized) {
+                                        return Some(Err(reason));
+                                    }
+                                    let diff = generate_diff(&func.source_no_docstring, &optimized);
+                                    Some(Ok((optimized, diff)))
+                                });
+
+                            let (_optimized_code, diff) = match optimized_and_diff {
+                                Some(Ok(pair)) => pair,
+                                Some(Err(reason)) => {
+                                    let failure_note = format!(
+                                        "{}\n\n[No safe change suggested: {}]",
+                                        enhanced_analysis, reason
+                                    );
+                                    if verbose {
+                                        eprintln!(
+                                            "Verifier/validation: rejected solution for {} ({}): {}",
+                                            check.key, func.name, reason
+                                        );
+                                    }
+                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
+                                    check_results.push(CheckResult {
+                                        check_key: check.key.to_string(),
+                                        check_name: check.name.to_string(),
+                                        has_issue: true,
+                                        analysis: failure_note,
+                                        solution: None,
+                                    });
+                                    continue;
+                                }
+                                None => {
+                                    let failure_note = format!(
+                                        "{}\n\n[No safe change suggested: Could not extract optimized function]",
+                                        enhanced_analysis
+                                    );
+                                    if verbose {
+                                        eprintln!(
+                                            "Verifier/validation: rejected solution for {} ({}): could not extract optimized function",
+                                            check.key, func.name
+                                        );
+                                    }
+                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
+                                    check_results.push(CheckResult {
+                                        check_key: check.key.to_string(),
+                                        check_name: check.name.to_string(),
+                                        has_issue: true,
+                                        analysis: failure_note,
+                                        solution: None,
+                                    });
+                                    continue;
+                                }
+                            };
+                            let solution = Some(format!("```diff\n{}\n```", diff));
+
+                            if !check.verifier_prompt.is_empty() {
+                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
+                                       progress_bar, progress_pct, current_func_num, total_functions_count,
+                                       functions_with_issues, check.key);
+                                std::io::Write::flush(&mut std::io::stdout()).ok();
+
+                                let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
+                                let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    generate_fn(&verifier_prompt, max_tokens, verbose)
+                                }))
+                                .ok()
+                                .and_then(|r| r.ok());
+
+                                if let Some((verifier_output, _truncated, stats)) = verifier_result {
+                                    total_stats.add(&stats);
+                                    let verification = parse_verification_result(&verifier_output);
+
+                                    if !verification.is_valid {
+                                        let rejection_note = format!("{}\n\n[Verifier rejected: {}]",
+                                                                    enhanced_analysis, verification.reason);
+                                        if verbose {
+                                            eprintln!(
+                                                "Verifier rejected solution for {} ({}): {}",
+                                                check.key, func.name, verification.reason
+                                            );
+                                        }
+                                        let _ = cache.put(&func, &check.key, true, &rejection_note, None);
+                                        check_results.push(CheckResult {
+                                            check_key: check.key.to_string(),
+                                            check_name: check.name.to_string(),
+                                            has_issue: true,
+                                            analysis: rejection_note,
+                                            solution: None,
+                                        });
+                                                continue;
+                                    }
+                                }
+                            }
+
+                            let _ = cache.put(&func, &check.key, true, &enhanced_analysis, solution.as_deref());
+                            check_results.push(CheckResult {
+                                check_key: check.key.to_string(),
+                                check_name: check.name.to_string(),
+                                has_issue: true,
+                                analysis: enhanced_analysis,
+                                solution,
+                            });
+                        } else {
+                            let _ = cache.put(&func, &check.key, false, &enhanced_analysis, None);
+                            check_results.push(CheckResult {
+                                check_key: check.key.to_string(),
+                                check_name: check.name.to_string(),
+                                has_issue: false,
+                                analysis: enhanced_analysis,
+                                solution: None,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] {}",
+                               progress_bar, progress_pct, current_func_num, total_functions_count,
+                               functions_with_issues, check.key,
+                               if error_msg.contains("too large") { "Too large" } else { "Error" });
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        println!("\n   Debug: Error in {}: {}", func.name, error_msg);
+                    }
+                }
+            }
+
+            let check_results = dedupe_check_results(check_results, dedupe_rules);
+            let actually_has_issues = check_results.iter().any(|r| r.has_issue);
+            if actually_has_issues {
+                functions_with_issues += 1;
+            }
+
+            if !check_results.is_empty() {
+                file_results.push(AnalysisResult {
+                    function: func,
+                    check_results,
+                });
+            }
+        }
+
+        if !file_results.is_empty() {
+            all_file_results.push(FileResults {
+                file_path: file_path.clone(),
+                results: file_results,
+            });
+        }
+    }
+
+    Ok(AnalysisOutput {
+        file_results: all_file_results,
+        total_functions,
+        functions_with_issues,
+        stats: total_stats,
+    })
+}
+
 fn main() -> Result<()> {
     // Set up panic hook to provide better error messages
     std::panic::set_hook(Box::new(|panic_info| {
@@ -990,11 +1570,9 @@ fn main() -> Result<()> {
     let config = load_checks_config(cli.config.clone())?;
     apply_config_settings(&mut cli, &config);
 
-    // Validate required arguments
+    // Validate PATH (always required for analysis)
     let python_path = cli.python_path.as_ref()
         .ok_or_else(|| anyhow::anyhow!("PATH argument is required (unless using --list-checks)"))?;
-    let model_path = cli.model.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--model argument is required (unless using --list-checks or providing model in config)"))?;
 
     // Get checks to run
     let checks = get_checks_to_run(&cli)?;
@@ -1002,44 +1580,29 @@ fn main() -> Result<()> {
         return Err(anyhow::anyhow!("No checks selected. Use --checks to specify checks or --list-checks to see available checks."));
     }
 
-    // Show initialization message (before suppressor)
-    println!("🔧 Initializing LoopSleuth...");
-
-    // Suppress llama.cpp logs unless verbose mode is enabled
-    // Keep the suppressor active for the entire run
-    let _suppressor = if !cli.verbose {
-        println!("   ⚙️  Setting up LLM backend...");
-        println!("   📦 Loading model: {}...", model_path.display());
-        Some(StderrSuppressor::new()?)
+    // Build API config if requested
+    let api_config: Option<ApiConfig> = if let Some(ref url) = cli.api_url {
+        let token = std::env::var("HF_TOKEN").ok();
+        let mut api = ApiConfig {
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()?,
+            url: url.trim_end_matches('/').to_string(),
+            token,
+            model_id: String::new(),
+        };
+        api.model_id = discover_api_model(&api)?;
+        Some(api)
     } else {
         None
     };
 
-    // Initialize llama backend
-    let backend = LlamaBackend::init()?;
-
-    // Load model
-    let model_params = LlamaModelParams::default();
-    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
-        .context("Failed to load model")?;
-
-    // Create context with configurable size
-    let n_ctx = NonZeroU32::new(cli.context_size)
-        .context("Invalid context size")?;
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(Some(n_ctx))
-        .with_n_batch(4096)
-        .with_n_threads(cli.threads as i32);
-
-    let mut ctx = model.new_context(&backend, ctx_params)
-        .context("Failed to create context")?;
-
-    println!("   ✅ Ready! (context: {} tokens)\n", cli.context_size);
+    // Show initialization message
+    println!("🔧 Initializing LoopSleuth...");
 
     // Initialize cache
     let cache = AnalysisCache::new(cli.cache_dir.clone(), !cli.no_cache)?;
 
-    // Clear cache if requested
     if cli.clear_cache {
         println!("🗑️  Clearing cache...");
         cache.clear()?;
@@ -1059,7 +1622,6 @@ fn main() -> Result<()> {
     let mut total_functions_count = 0;
     for path in &python_files {
         if let Ok(mut functions) = extract_functions(path) {
-            // Apply function name filter if specified
             if let Some(ref filter) = cli.filter_function {
                 let filter_lower = filter.to_lowercase();
                 functions.retain(|func| func.name.to_lowercase().contains(&filter_lower));
@@ -1073,356 +1635,96 @@ fn main() -> Result<()> {
     }
     println!("📊 Analyzing {} function(s)...\n", total_functions_count);
 
-    let mut all_file_results: Vec<FileResults> = Vec::new();
-    let mut total_functions = 0;
-    let mut current_func_num = 0;
-    let mut functions_with_issues = 0;
-    let mut total_stats = TokenStats::default();
-
-    // Process each file
-    for file_path in &python_files {
-        let mut functions = extract_functions(&file_path)?;
-
-        // Apply function name filter if specified
-        if let Some(ref filter) = cli.filter_function {
-            let filter_lower = filter.to_lowercase();
-            functions.retain(|func| func.name.to_lowercase().contains(&filter_lower));
+    // Run analysis with appropriate backend
+    let output = if let Some(ref api) = api_config {
+        println!("   🌐 Using API endpoint: {}", api.url);
+        println!("   🤖 Model: {}", api.model_id);
+        if api.token.is_some() {
+            println!("   🔑 Authenticated with HF_TOKEN");
+        } else {
+            println!("   ⚠️  No HF_TOKEN set — requests may fail if endpoint requires auth");
         }
+        println!("   ✅ Ready!\n");
 
-        let mut file_results = Vec::new();
+        run_analysis_loop(
+            &python_files, &checks, &cache, &config.dedupe,
+            cli.filter_function.as_deref(), cli.skip_large, cli.max_tokens, cli.verbose,
+            total_functions_count,
+            &mut |prompt, max_tokens, verbose| generate_response_api(api, prompt, max_tokens, verbose),
+        )?
+    } else {
+        let model_path = cli.model.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--model argument is required (unless using --api-url)"))?;
 
-        for func in functions {
-            total_functions += 1;
-            current_func_num += 1;
+        // Suppress llama.cpp logs unless verbose mode is enabled
+        let _suppressor = if !cli.verbose {
+            println!("   ⚙️  Setting up LLM backend...");
+            println!("   📦 Loading model: {}...", model_path.display());
+            Some(StderrSuppressor::new()?)
+        } else {
+            None
+        };
 
-            // Calculate progress bar
-            let progress_pct = (current_func_num as f32 / total_functions_count as f32 * 100.0) as usize;
-            let bar_width = 30;
-            let filled = (current_func_num as f32 / total_functions_count as f32 * bar_width as f32) as usize;
-            let empty = bar_width - filled;
-            let progress_bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+        let backend = LlamaBackend::init()?;
+        let model_params = LlamaModelParams::default();
+        let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
+            .with_context(|| {
+                format!(
+                    "Failed to load model '{}'. Re-run with --verbose to show the underlying llama.cpp loader error.",
+                    model_path.display()
+                )
+            })?;
 
-            // Get filename for display
-            let filename = file_path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
+        let n_ctx = NonZeroU32::new(cli.context_size)
+            .context("Invalid context size")?;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(Some(n_ctx))
+            .with_n_batch(4096)
+            .with_n_threads(cli.threads as i32);
 
-            // Include class name in display if function is a method
-            let func_display = if let Some(ref class_name) = func.class_name {
-                format!("{}::{}::{}", filename, class_name, func.name)
-            } else {
-                format!("{}::{}", filename, func.name)
-            };
+        let mut ctx = model.new_context(&backend, ctx_params)
+            .with_context(|| {
+                format!(
+                    "Failed to create context for model '{}'. Re-run with --verbose to show the underlying llama.cpp backend error.",
+                    model_path.display()
+                )
+            })?;
 
-            // Skip large functions if requested
-            if cli.skip_large > 0 {
-                let line_count = func.source.lines().count();
-                if line_count > cli.skip_large {
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⊗ Skipped: {} (too large)",
-                           progress_bar, progress_pct, current_func_num, total_functions_count,
-                           functions_with_issues, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-                    continue;
-                }
-            }
+        println!("   ✅ Ready! (context: {} tokens)\n", cli.context_size);
 
-            // Run all checks for this function
-            let mut check_results = Vec::new();
-
-            for check in &checks {
-                if let Some(reason) = guard_skip_reason(check, &func)? {
-                    let analysis = format!(
-                        "VERDICT: OK\nCONFIDENCE: 0.00\nDETAIL: Skipped by guard ({})\nEND",
-                        reason
-                    );
-                    let _ = cache.put(&func, &check.key, false, &analysis, None);
-                    check_results.push(CheckResult {
-                        check_key: check.key.to_string(),
-                        check_name: check.name.to_string(),
-                        has_issue: false,
-                        analysis,
-                        solution: None,
-                    });
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
-                           progress_bar, progress_pct, current_func_num, total_functions_count,
-                           functions_with_issues, check.key, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-                    continue;
-                }
-
-                // Check cache first
-                if let Ok(Some(cached)) = cache.get(&func, &check.key) {
-                    // Cache hit
-                    check_results.push(CheckResult {
-                        check_key: check.key.to_string(),
-                        check_name: check.name.to_string(),
-                        has_issue: cached.has_issue,
-                        analysis: cached.analysis,
-                        solution: cached.solution,
-                    });
-
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💾 [{}] {}",
-                           progress_bar, progress_pct, current_func_num, total_functions_count,
-                           functions_with_issues, check.key, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-
-                    continue;
-                }
-
-                // Cache miss - run LLM detection
-                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] {}",
-                       progress_bar, progress_pct, current_func_num, total_functions_count,
-                       functions_with_issues, check.key, func_display);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
-
-                // Run detection
-                let detection_prompt = check.format_detection_prompt(&func);
-                let detection_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    generate_response(&model, &mut ctx, &detection_prompt, cli.max_tokens, cli.verbose)
-                }));
-
-                let detection_result = match detection_result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💥 [{}] Error",
-                               progress_bar, progress_pct, current_func_num, total_functions_count,
-                               functions_with_issues, check.key);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        continue;
-                    }
-                };
-
-                match detection_result {
-                    Ok((analysis, _truncated, stats)) => {
-                        total_stats.add(&stats);
-                        let detection = check.parse_detection(&analysis);
-                        let has_issue = detection.has_issue;
-
-                        // Store confidence in analysis for debugging
-                        let enhanced_analysis = if let Some(conf) = detection.confidence {
-                            format!("{}\n[Confidence: {:.2}]", analysis, conf)
-                        } else {
-                            analysis.clone()
-                        };
-
-                        if has_issue {
-                            // Generate solution
-                            print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💡 [{}] Solution...",
-                                   progress_bar, progress_pct, current_func_num, total_functions_count,
-                                   functions_with_issues, check.key);
-                            std::io::Write::flush(&mut std::io::stdout()).ok();
-
-                            let solution_prompt = check.format_solution_prompt(&func);
-                            let solution_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                generate_response(&model, &mut ctx, &solution_prompt, cli.max_tokens, cli.verbose)
-                            }))
-                            .ok()
-                            .and_then(|r| r.ok());
-
-                            let solution_text = solution_result.as_ref().map(|(text, _truncated, _stats)| text.clone());
-
-                            // Accumulate stats from solution generation
-                            if let Some((_text, _truncated, stats)) = solution_result {
-                                total_stats.add(&stats);
-                            }
-
-                            // Extract optimized function and generate diff
-                            let optimized_and_diff = solution_text.as_ref()
-                                .and_then(|sol| {
-                                    let optimized = extract_optimized_function(sol)?;
-
-                                    if let Err(reason) = validate_optimization(&func.source_no_docstring, &optimized) {
-                                        return Some(Err(reason));
-                                    }
-
-                                    let diff = generate_diff(&func.source_no_docstring, &optimized);
-                                    Some(Ok((optimized, diff)))
-                                });
-
-                            let (_optimized_code, diff) = match optimized_and_diff {
-                                Some(Ok(pair)) => pair,
-                                Some(Err(reason)) => {
-                                    let failure_note = format!(
-                                        "{}\n\n[No safe change suggested: {}]",
-                                        enhanced_analysis, reason
-                                    );
-                                    if cli.verbose {
-                                        eprintln!(
-                                            "Verifier/validation: rejected solution for {} ({}): {}",
-                                            check.key,
-                                            func.name,
-                                            reason
-                                        );
-                                    }
-                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
-
-                                    check_results.push(CheckResult {
-                                        check_key: check.key.to_string(),
-                                        check_name: check.name.to_string(),
-                                        has_issue: true,
-                                        analysis: failure_note,
-                                        solution: None,
-                                    });
-
-                                    continue;
-                                }
-                                None => {
-                                    let failure_note = format!(
-                                        "{}\n\n[No safe change suggested: Could not extract optimized function]",
-                                        enhanced_analysis
-                                    );
-                                    if cli.verbose {
-                                        eprintln!(
-                                            "Verifier/validation: rejected solution for {} ({}): could not extract optimized function",
-                                            check.key,
-                                            func.name
-                                        );
-                                    }
-                                    let _ = cache.put(&func, &check.key, true, &failure_note, None);
-
-                                    check_results.push(CheckResult {
-                                        check_key: check.key.to_string(),
-                                        check_name: check.name.to_string(),
-                                        has_issue: true,
-                                        analysis: failure_note,
-                                        solution: None,
-                                    });
-
-                                    continue;
-                                }
-                            };
-                            let solution = Some(format!("```diff\n{}\n```", diff));
-
-                            // Diff is valid according to validate_diff, run verifier if available
-                            if !check.verifier_prompt.is_empty() {
-                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
-                                       progress_bar, progress_pct, current_func_num, total_functions_count,
-                                       functions_with_issues, check.key);
-                                std::io::Write::flush(&mut std::io::stdout()).ok();
-
-                                let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
-                                let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    generate_response(&model, &mut ctx, &verifier_prompt, cli.max_tokens, cli.verbose)
-                                }))
-                                .ok()
-                                .and_then(|r| r.ok());
-
-                                if let Some((verifier_output, _truncated, stats)) = verifier_result {
-                                    total_stats.add(&stats);
-                                    let verification = parse_verification_result(&verifier_output);
-
-                                    if !verification.is_valid {
-                                        // Verifier rejected - store detection but no solution
-                                        let rejection_note = format!("{}\n\n[Verifier rejected: {}]",
-                                                                    enhanced_analysis, verification.reason);
-                                        if cli.verbose {
-                                            eprintln!(
-                                                "Verifier rejected solution for {} ({}): {}",
-                                                check.key,
-                                                func.name,
-                                                verification.reason
-                                            );
-                                        }
-                                        let _ = cache.put(&func, &check.key, true, &rejection_note, None);
-
-                                        check_results.push(CheckResult {
-                                            check_key: check.key.to_string(),
-                                            check_name: check.name.to_string(),
-                                            has_issue: true,
-                                            analysis: rejection_note,
-                                            solution: None,
-                                        });
-
-                                                continue;
-                                    }
-                                }
-                            }
-
-                            // Verifier passed (or no verifier) - store in cache
-                            let _ = cache.put(&func, &check.key, true, &enhanced_analysis, solution.as_deref());
-
-                            check_results.push(CheckResult {
-                                check_key: check.key.to_string(),
-                                check_name: check.name.to_string(),
-                                has_issue: true,
-                                analysis: enhanced_analysis,
-                                solution,
-                            });
-                        } else {
-                            // No issue - store in cache
-                            let _ = cache.put(&func, &check.key, false, &enhanced_analysis, None);
-
-                            check_results.push(CheckResult {
-                                check_key: check.key.to_string(),
-                                check_name: check.name.to_string(),
-                                has_issue: false,
-                                analysis: enhanced_analysis,
-                                solution: None,
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] {}",
-                               progress_bar, progress_pct, current_func_num, total_functions_count,
-                               functions_with_issues, check.key,
-                               if error_msg.contains("too large") { "Too large" } else { "Error" });
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        // Log the actual error for debugging (use println to avoid stderr suppression)
-                        println!("\n   Debug: Error in {}: {}", func.name, error_msg);
-                    }
-                }
-            }
-
-            // Only count as having issues if we actually added results with issues
-            // (not just detected issues that were later rejected due to invalid diffs)
-            let check_results = dedupe_check_results(check_results, &config.dedupe);
-            let actually_has_issues = check_results.iter().any(|r| r.has_issue);
-            if actually_has_issues {
-                functions_with_issues += 1;
-            }
-
-            if !check_results.is_empty() {
-                file_results.push(AnalysisResult {
-                    function: func,
-                    check_results,
-                });
-            }
-        }
-
-        if !file_results.is_empty() {
-            all_file_results.push(FileResults {
-                file_path: file_path.clone(),
-                results: file_results,
-            });
-        }
-    }
+        run_analysis_loop(
+            &python_files, &checks, &cache, &config.dedupe,
+            cli.filter_function.as_deref(), cli.skip_large, cli.max_tokens, cli.verbose,
+            total_functions_count,
+            &mut |prompt, max_tokens, verbose| generate_response(&model, &mut ctx, prompt, max_tokens, verbose),
+        )?
+    };
 
     // Clear the progress line and show completion
     print!("\r\x1b[K");
     println!("✅ Analysis complete!\n");
 
     // Flatten results for summary
-    let all_results: Vec<AnalysisResult> = all_file_results
+    let all_results: Vec<AnalysisResult> = output.file_results
         .iter()
         .flat_map(|fr| fr.results.iter())
         .cloned()
         .collect();
 
     // Print concise summary
-    print_summary(&all_file_results, file_count, total_functions, functions_with_issues, &checks, &cache, cli.no_cache, &total_stats);
+    print_summary(&output.file_results, file_count, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache, &output.stats);
 
     // Print detailed markdown report only if --details flag is set
-    if functions_with_issues > 0 && cli.details {
+    if output.functions_with_issues > 0 && cli.details {
         print_detailed_report(&all_results);
-    } else if functions_with_issues > 0 && !cli.details && cli.output.is_none() {
+    } else if output.functions_with_issues > 0 && !cli.details && cli.output.is_none() {
         println!("💡 Tip: Use --details to see full analysis or --output FILE to save report");
         println!();
     }
 
     // Save to file if requested (always includes full details)
     if let Some(output_path) = &cli.output {
-        write_report_to_file(output_path, &all_results, total_functions, functions_with_issues, &checks, &cache, cli.no_cache)?;
+        write_report_to_file(output_path, &all_results, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache)?;
         println!("📄 Report saved to: {}", output_path.display());
     }
 
@@ -1778,6 +2080,183 @@ fn fix_truncated_markdown(text: &str) -> String {
     result.push_str("\n\n*[Output truncated - increase --max-tokens for complete solution]*");
 
     result
+}
+
+fn generate_response_api(
+    api: &ApiConfig,
+    prompt: &str,
+    max_tokens: i32,
+    verbose: bool,
+) -> Result<(String, bool, TokenStats)> {
+    let start_time = Instant::now();
+
+    if verbose {
+        println!("\n╔════════════════════════════════════════════════════════════════");
+        println!("║ PROMPT (API)");
+        println!("╚════════════════════════════════════════════════════════════════");
+        println!("{}", prompt);
+        println!("────────────────────────────────────────────────────────────────\n");
+    }
+
+    // Parse ChatML prompt into messages for the chat completions API
+    let messages = parse_chatml_to_messages(prompt);
+    let chat_url = format!("{}/v1/chat/completions", api.url);
+
+    let body = serde_json::json!({
+        "model": api.model_id,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "stop": ["END"]
+    });
+
+    let mut request = api.client.post(&chat_url)
+        .header("Content-Type", "application/json");
+
+    if let Some(ref token) = api.token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request.json(&body).send()
+        .with_context(|| format!("Failed to connect to API endpoint: {}", chat_url))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().unwrap_or_default();
+        return Err(anyhow::anyhow!(
+            "API request failed (status {}): {}",
+            status, error_body
+        ));
+    }
+
+    let response_json: serde_json::Value = response.json()
+        .context("Failed to parse API response as JSON")?;
+
+    // OpenAI chat completions response: {"choices": [{"message": {"content": "..."}, "finish_reason": "..."}], "usage": {...}}
+    let choice = response_json.get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .ok_or_else(|| anyhow::anyhow!("No choices in API response: {}", response_json))?;
+
+    let generated_text = choice.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No message content in API response: {}", choice))?
+        .to_string();
+
+    let finish_reason = choice.get("finish_reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let usage = response_json.get("usage");
+    let input_tokens = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let output_tokens = usage
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let was_truncated = finish_reason == "length";
+    let generation_time = start_time.elapsed();
+
+    // Strip trailing END line if present (some configs include the stop sequence)
+    let mut cleaned = generated_text;
+    if let Some(last_line) = cleaned.lines().last() {
+        if last_line.trim() == "END" {
+            if let Some(pos) = cleaned.rfind('\n') {
+                cleaned.truncate(pos);
+            } else {
+                cleaned.clear();
+            }
+        }
+    }
+
+    let cleaned = if was_truncated {
+        fix_truncated_markdown(&cleaned)
+    } else {
+        cleaned
+    };
+
+    let input_token_count = if input_tokens > 0 { input_tokens } else { prompt.len() / 4 };
+    let output_token_count = if output_tokens > 0 { output_tokens } else { cleaned.len() / 4 };
+    let stats = TokenStats::new(input_token_count, output_token_count, generation_time);
+
+    if verbose {
+        println!("\n╔════════════════════════════════════════════════════════════════");
+        println!("║ RESPONSE (API)");
+        println!("╚════════════════════════════════════════════════════════════════");
+        println!("{}", cleaned);
+        println!("────────────────────────────────────────────────────────────────");
+        println!("📊 Tokens: {} in, {} out | Speed: {:.1} tok/s | Time: {:.1}s{}",
+            input_token_count, output_token_count,
+            if generation_time.as_secs_f64() > 0.0 { output_token_count as f64 / generation_time.as_secs_f64() } else { 0.0 },
+            generation_time.as_secs_f64(),
+            if was_truncated { " | ⚠️ TRUNCATED" } else { "" }
+        );
+        println!("────────────────────────────────────────────────────────────────\n");
+    }
+
+    Ok((cleaned, was_truncated, stats))
+}
+
+/// Parse a ChatML-formatted prompt into OpenAI messages array.
+/// Extracts <|im_start|>role\ncontent<|im_end|> blocks into {"role": "...", "content": "..."}.
+fn parse_chatml_to_messages(prompt: &str) -> Vec<serde_json::Value> {
+    let mut messages = Vec::new();
+    let mut remaining = prompt;
+
+    while let Some(start_pos) = remaining.find("<|im_start|>") {
+        let after_tag = &remaining[start_pos + 12..]; // skip "<|im_start|>"
+
+        // Find the role (first line after the tag)
+        let role_end = after_tag.find('\n').unwrap_or(after_tag.len());
+        let role = after_tag[..role_end].trim();
+
+        let content_start = &after_tag[role_end + 1..];
+
+        // Find the end tag or next start tag
+        if let Some(end_pos) = content_start.find("<|im_end|>") {
+            let content = content_start[..end_pos].trim();
+            if !content.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": role,
+                    "content": content
+                }));
+            }
+            remaining = &content_start[end_pos + 10..]; // skip "<|im_end|>"
+        } else {
+            // No end tag -- this is the final assistant prompt (no content yet)
+            // Don't add an empty assistant message; the API will generate one
+            break;
+        }
+    }
+
+    messages
+}
+
+/// Discover the model ID from an OpenAI-compatible /v1/models endpoint
+fn discover_api_model(api: &ApiConfig) -> Result<String> {
+    let models_url = format!("{}/v1/models", api.url);
+    let mut request = api.client.get(&models_url);
+    if let Some(ref token) = api.token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    let response = request.send()
+        .with_context(|| format!("Failed to connect to {}", models_url))?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to discover model (status {}). Provide the model ID via --api-model.", response.status()));
+    }
+    let json: serde_json::Value = response.json()
+        .context("Failed to parse /v1/models response")?;
+    let model_id = json.get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|m| m.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No models found at endpoint. Check the endpoint URL."))?;
+    Ok(model_id.to_string())
 }
 
 /// Validate that a diff actually contains meaningful changes
@@ -2390,4 +2869,188 @@ fn write_report_to_file(
     writeln!(file, "</html>")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        embedding_equality_scan_detail,
+        has_explicit_token_dimension_loop,
+        has_embedding_equality_scan,
+        has_mask_built_inside_layer_loop,
+    };
+
+    #[test]
+    fn token_loop_filter_accepts_explicit_seq_len_loop() {
+        let source = r#"
+def scale_tokens_slow(hidden_states, scale):
+    batch, seq_len, dim = hidden_states.shape
+    out = hidden_states.clone()
+    for i in range(seq_len):
+        out[:, i, :] = hidden_states[:, i, :] * scale
+    return out
+"#;
+
+        assert!(has_explicit_token_dimension_loop(source));
+    }
+
+    #[test]
+    fn token_loop_filter_rejects_vectorized_tensor_ops() {
+        let source = r#"
+def _convert_to_block(self, hidden_states):
+    batch_size, seq_len, num_heads, head_dim = hidden_states.shape
+    num_blocks = (seq_len + self.chunk_size - 1) // self.chunk_size
+    pad = num_blocks * self.chunk_size - seq_len
+    hidden_states = F.pad(hidden_states, (0, 0, 0, 0, 0, pad))
+    return hidden_states.reshape(batch_size, num_blocks, self.chunk_size, num_heads, head_dim).contiguous()
+"#;
+
+        assert!(!has_explicit_token_dimension_loop(source));
+    }
+
+    #[test]
+    fn token_loop_filter_rejects_layer_loops() {
+        let source = r#"
+def forward(self, hidden_states):
+    position_embeddings = {}
+    for layer_type in self.unique_layer_types:
+        position_embeddings[layer_type] = self.rotary_emb(hidden_states, self.position_ids, layer_type)
+    for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+        hidden_states = decoder_layer(hidden_states)
+    return hidden_states
+"#;
+
+        assert!(!has_explicit_token_dimension_loop(source));
+    }
+
+    #[test]
+    fn token_loop_filter_rejects_fixed_small_loops() {
+        let source = r#"
+def forward(self, x, position_ids):
+    all_cos = []
+    for i in range(2):
+        dim_position_ids = position_ids[:, :, i]
+        all_cos.append(dim_position_ids)
+    return all_cos
+"#;
+
+        assert!(!has_explicit_token_dimension_loop(source));
+    }
+
+    #[test]
+    fn token_loop_filter_accepts_while_seq_len_loop() {
+        let source = r#"
+def scale_tokens_slow(hidden_states, scale):
+    batch, seq_len, dim = hidden_states.shape
+    out = hidden_states.clone()
+    i = 0
+    while i < seq_len:
+        out[:, i, :] = hidden_states[:, i, :] * scale
+        i += 1
+    return out
+"#;
+
+        assert!(has_explicit_token_dimension_loop(source));
+    }
+
+    #[test]
+    fn mask_loop_filter_accepts_mask_created_inside_layer_loop() {
+        let source = r#"
+def build_mask_in_layer_loop(layers, x):
+    seq_len = x.shape[1]
+    for layer in layers:
+        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
+        x = layer(x, mask=mask)
+    return x
+"#;
+
+        assert!(has_mask_built_inside_layer_loop(source));
+    }
+
+    #[test]
+    fn mask_loop_filter_rejects_mask_built_before_loop() {
+        let source = r#"
+def build_mask_once(layers, x):
+    seq_len = x.shape[1]
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device))
+    for layer in layers:
+        x = layer(x, mask=mask)
+    return x
+"#;
+
+        assert!(!has_mask_built_inside_layer_loop(source));
+    }
+
+    #[test]
+    fn mask_loop_filter_rejects_mask_reuse_inside_decoder_loop() {
+        let source = r#"
+def forward(self, hidden_states, attention_mask):
+    causal_mask_mapping = {
+        "full_attention": create_causal_mask(**mask_kwargs),
+        "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+    }
+    for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+        hidden_states = decoder_layer(hidden_states, attention_mask=causal_mask_mapping[self.config.layer_types[i]])
+    return hidden_states
+"#;
+
+        assert!(!has_mask_built_inside_layer_loop(source));
+    }
+
+    #[test]
+    fn embedding_scan_filter_accepts_vocab_reverse_lookup() {
+        let source = r#"
+def get_per_layer_inputs(self, input_ids, inputs_embeds):
+    if input_ids is None:
+        input_ids = (
+            (
+                inputs_embeds[:, :, None, :]
+                == self.embed_tokens.weight[None, None, :, :] * self.config.hidden_size**0.5
+            )
+            .all(dim=3)
+            .nonzero()[:, 2]
+        )
+    return input_ids
+"#;
+
+        assert!(has_embedding_equality_scan(source));
+        assert!(
+            embedding_equality_scan_detail(source)
+                .unwrap()
+                .contains("embed_tokens.weight")
+        );
+    }
+
+    #[test]
+    fn embedding_scan_filter_accepts_special_token_mask_scan() {
+        let source = r#"
+def get_placeholder_mask(self, inputs_embeds):
+    special_image_mask = (
+        inputs_embeds
+        == self.get_input_embeddings()(
+            torch.tensor(self.config.image_token_id, dtype=torch.long, device=inputs_embeds.device)
+        )
+    ).all(-1)
+    return special_image_mask
+"#;
+
+        assert!(has_embedding_equality_scan(source));
+        assert!(
+            embedding_equality_scan_detail(source)
+                .unwrap()
+                .contains("get_input_embeddings()")
+        );
+    }
+
+    #[test]
+    fn embedding_scan_filter_rejects_normal_embedding_lookup() {
+        let source = r#"
+def forward(self, input_ids):
+    inputs_embeds = self.get_input_embeddings()(input_ids)
+    return inputs_embeds
+"#;
+
+        assert!(!has_embedding_equality_scan(source));
+        assert!(embedding_equality_scan_detail(source).is_none());
+    }
 }

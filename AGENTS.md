@@ -301,7 +301,9 @@ make run MODEL=./models/model.gguf PATH=./tests/checks/
 
 | Model | Size | Speed | Accuracy | Best For |
 |-------|------|-------|----------|----------|
-| **Qwen2.5-Coder-3B** | 2GB | Fast | Excellent | Recommended |
+| **Qwen2.5-Coder-7B** | 4.7GB | Fast | Excellent | Recommended |
+| Qwen3.5 (2B) | 1.3GB | Fast | Good | Compact general-purpose alternative |
+| Gemma 4 (E2B) | 3.1GB | Fast | Good | Alternative local analysis |
 | Devstral Small 2 (24B) | 15GB | Slow | Excellent | Deep analysis |
 | Qwen2.5-0.5B | 400MB | Very Fast | Fair | Quick checks |
 

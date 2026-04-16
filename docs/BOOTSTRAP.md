@@ -81,21 +81,36 @@ When running `loopsleuth download-model`, users see:
 
 Choose a model to download:
 
-1. Qwen2.5-Coder (3B) - Recommended ⭐ (~2GB)
+1. Qwen2.5-Coder (7B) - Recommended ⭐ (~4.7GB)
    Best for code analysis, excellent accuracy
 
-2. Devstral Small 2 (24B) (~15GB)
+2. Qwen2.5-Coder (3B) (~2GB)
+   Faster but less accurate on harder ML-specific checks
+
+3. Devstral Small 2 (24B) (~15GB)
    Highest accuracy, requires more RAM
 
-3. Qwen2.5 (3B) (~2GB)
+4. Qwen2.5 (3B) (~2GB)
    General purpose, good balance
 
-4. Qwen2.5 (0.5B) (~400MB)
+5. Qwen2.5 (0.5B) (~400MB)
    Very fast, lower accuracy
+
+6. Qwen3.5 (2B) (~1.3GB)
+   Compact newer general-purpose alternative
+
+7. Qwen3.5 (4B) (~3GB)
+   Stronger compact alternative with better accuracy than 2B
+
+8. Gemma 4 (E2B) (~3.1GB)
+   Good alternative for local reasoning and code analysis
+
+9. Custom model (provide Hugging Face URL) (varies)
+   Download from a custom Hugging Face repository
 
 0. Exit without downloading
 
-Enter choice (1-4, 0 to exit) [1]:
+Enter choice (1-9, 0 to exit) [1]:
 ```
 
 ### Smart Dependency Management
@@ -132,17 +147,17 @@ Uses `huggingface_hub.hf_hub_download()` which shows:
 After successful download:
 ```
 ✅ Download complete!
-   Model saved to: /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf
+   Model saved to: /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf
 
 ============================================================
   LoopSleuth is ready! 🎉
 ============================================================
 
 Run analysis with:
-  loopsleuth -m /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf <path_to_python_code>
+  loopsleuth -m /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf <path_to_python_code>
 
 Example:
-  loopsleuth -m /Users/you/.loopsleuth/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ./my_project/
+  loopsleuth -m /Users/you/.loopsleuth/models/Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf ./my_project/
 ```
 
 ## Technical Details
@@ -152,13 +167,13 @@ Example:
 ```python
 MODELS = {
     "1": {
-        "name": "Qwen2.5-Coder (3B) - Recommended ⭐",
-        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-        "filename": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
-        "size": "~2GB",
+        "name": "Qwen2.5-Coder (7B) - Recommended ⭐",
+        "repo": "unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF",
+        "filename": "Qwen2.5-Coder-7B-Instruct-128K-Q4_K_M.gguf",
+        "size": "~4.7GB",
         "description": "Best for code analysis, excellent accuracy",
     },
-    # ... more models
+    # ... more models, including Qwen3.5 (2B), Qwen3.5 (4B), Gemma 4 (E2B), and custom repo support
 }
 ```
 
