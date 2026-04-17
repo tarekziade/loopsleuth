@@ -1,0 +1,21 @@
+name: LoopSleuth PR Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  analyze:
+    name: Performance analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./github-app
+        with:
+          hf_token: ${{ secrets.HF_TOKEN }}
+          api_url: ${{ secrets.LOOPSLEUTH_API_URL }}

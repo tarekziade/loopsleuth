@@ -1,0 +1,62 @@
+name: "LoopSleuth PR Analysis"
+description: "Analyze Python code in pull requests for performance issues using LoopSleuth + HF Inference Endpoints"
+branding:
+  icon: "zap"
+  color: "orange"
+
+inputs:
+  hf_token:
+    description: "Hugging Face API token for the inference endpoint"
+    required: true
+  api_url:
+    description: "HF Inference Endpoint URL"
+    required: true
+  max_files:
+    description: "Maximum number of Python files to analyze per PR"
+    required: false
+    default: "15"
+  checks:
+    description: "Comma-separated list of checks to run (default: all)"
+    required: false
+    default: ""
+  github_token:
+    description: "GitHub token for posting PR comments (defaults to GITHUB_TOKEN)"
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Set up CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: "3.25.x"
+
+    - name: Install system dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libclang-dev
+
+    - name: Install loopsleuth
+      shell: bash
+      run: pip install loopsleuth
+
+    - name: Run LoopSleuth analysis
+      shell: bash
+      env:
+        HF_TOKEN: ${{ inputs.hf_token }}
+        LOOPSLEUTH_API_URL: ${{ inputs.api_url }}
+        LOOPSLEUTH_MAX_FILES: ${{ inputs.max_files }}
+        LOOPSLEUTH_CHECKS: ${{ inputs.checks }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: python "${{ github.action_path }}/analyze_pr.py"

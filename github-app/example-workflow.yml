@@ -1,0 +1,33 @@
+# .github/workflows/loopsleuth.yml
+# Copy this file into your repository to enable LoopSleuth PR analysis.
+#
+# Required secrets:
+#   HF_TOKEN            - Hugging Face API token
+#   LOOPSLEUTH_API_URL  - HF Inference Endpoint URL
+
+name: LoopSleuth
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  analyze:
+    name: Performance analysis
+    runs-on: ubuntu-latest
+    # Only run on PRs that touch Python files
+    if: |
+      github.event.pull_request &&
+      contains(join(github.event.pull_request.labels.*.name, ','), '') == true
+    steps:
+      - uses: tarekziade/loopsleuth/github-app@main
+        with:
+          hf_token: ${{ secrets.HF_TOKEN }}
+          api_url: ${{ secrets.LOOPSLEUTH_API_URL }}
+          # Optional:
+          # max_files: "15"
+          # checks: "quadratic,linear-in-loop"
