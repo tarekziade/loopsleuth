@@ -101,6 +101,10 @@ struct Cli {
     /// Filter functions by name (substring match, case-insensitive)
     #[arg(short = 'k', long, value_name = "NAME")]
     filter_function: Option<String>,
+
+    /// Output format: text (default) or json
+    #[arg(long, default_value = "text")]
+    format: String,
 }
 
 /// Token usage statistics
@@ -135,11 +139,13 @@ impl TokenStats {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 struct FunctionInfo {
     name: String,
+    #[serde(skip)]
     source: String,
-    source_no_docstring: String,  // Version without docstring for LLM prompts
+    #[serde(skip)]
+    source_no_docstring: String,
     file_path: PathBuf,
     line_number: usize,
     class_name: Option<String>,
@@ -848,7 +854,7 @@ fn list_all_checks(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 struct CheckResult {
     check_key: String,
     check_name: String,
@@ -872,12 +878,13 @@ fn dedupe_check_results(mut results: Vec<CheckResult>, rules: &[DedupeRule]) -> 
     results
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 struct AnalysisResult {
     function: FunctionInfo,
     check_results: Vec<CheckResult>,
 }
 
+#[derive(Serialize)]
 struct FileResults {
     file_path: PathBuf,
     results: Vec<AnalysisResult>,
@@ -1210,12 +1217,23 @@ fn run_analysis_loop<F>(
     skip_large: usize,
     max_tokens: i32,
     verbose: bool,
+    quiet: bool,
     total_functions_count: usize,
     generate_fn: &mut F,
 ) -> Result<AnalysisOutput>
 where
     F: FnMut(&str, i32, bool) -> Result<(String, bool, TokenStats)>,
 {
+    // Macro to print progress only when not in quiet mode
+    macro_rules! progress {
+        ($($arg:tt)*) => {
+            if !quiet {
+                print!($($arg)*);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
+        };
+    }
+
     let mut all_file_results: Vec<FileResults> = Vec::new();
     let mut total_functions = 0;
     let mut current_func_num = 0;
@@ -1255,10 +1273,9 @@ where
             if skip_large > 0 {
                 let line_count = func.source.lines().count();
                 if line_count > skip_large {
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⊗ Skipped: {} (too large)",
+                    progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⊗ Skipped: {} (too large)",
                            progress_bar, progress_pct, current_func_num, total_functions_count,
                            functions_with_issues, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
                     continue;
                 }
             }
@@ -1279,10 +1296,9 @@ where
                         analysis,
                         solution: None,
                     });
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
+                    progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
                            progress_bar, progress_pct, current_func_num, total_functions_count,
                            functions_with_issues, check.key, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
                     continue;
                 }
 
@@ -1299,10 +1315,9 @@ where
                         analysis,
                         solution: None,
                     });
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
+                    progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⏭️  [{}] {}",
                            progress_bar, progress_pct, current_func_num, total_functions_count,
                            functions_with_issues, check.key, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
                     continue;
                 }
 
@@ -1314,21 +1329,19 @@ where
                         analysis: cached.analysis,
                         solution: cached.solution,
                     });
-                    print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💾 [{}] {}",
+                    progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💾 [{}] {}",
                            progress_bar, progress_pct, current_func_num, total_functions_count,
                            functions_with_issues, check.key, func_display);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
                     continue;
                 }
 
                 // Cache miss - run detection
                 let rule_based_analysis = rule_based_detection(check, &func);
-                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | {} [{}] {}",
+                progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | {} [{}] {}",
                        progress_bar, progress_pct, current_func_num, total_functions_count,
                        functions_with_issues,
                        if rule_based_analysis.is_some() { "⚙️" } else { "🔍" },
                        check.key, func_display);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
 
                 let detection_result = if let Some(analysis) = rule_based_analysis {
                     Ok(Ok((analysis, false, TokenStats::default())))
@@ -1342,10 +1355,9 @@ where
                 let detection_result = match detection_result {
                     Ok(res) => res,
                     Err(_) => {
-                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💥 [{}] Error",
+                        progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💥 [{}] Error",
                                progress_bar, progress_pct, current_func_num, total_functions_count,
                                functions_with_issues, check.key);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
                         continue;
                     }
                 };
@@ -1363,10 +1375,9 @@ where
                         };
 
                         if has_issue {
-                            print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💡 [{}] Solution...",
+                            progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 💡 [{}] Solution...",
                                    progress_bar, progress_pct, current_func_num, total_functions_count,
                                    functions_with_issues, check.key);
-                            std::io::Write::flush(&mut std::io::stdout()).ok();
 
                             let solution_prompt = check.format_solution_prompt(&func);
                             let solution_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1439,10 +1450,9 @@ where
                             let solution = Some(format!("```diff\n{}\n```", diff));
 
                             if !check.verifier_prompt.is_empty() {
-                                print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
+                                progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | 🔍 [{}] Verifying solution...",
                                        progress_bar, progress_pct, current_func_num, total_functions_count,
                                        functions_with_issues, check.key);
-                                std::io::Write::flush(&mut std::io::stdout()).ok();
 
                                 let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
                                 let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1498,12 +1508,13 @@ where
                     }
                     Err(e) => {
                         let error_msg = e.to_string();
-                        print!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] {}",
+                        progress!("\r\x1b[K{} {}% [{}/{}] | Issues: {} | ⚠️  [{}] {}",
                                progress_bar, progress_pct, current_func_num, total_functions_count,
                                functions_with_issues, check.key,
                                if error_msg.contains("too large") { "Too large" } else { "Error" });
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        println!("\n   Debug: Error in {}: {}", func.name, error_msg);
+                        if !quiet {
+                            println!("\n   Debug: Error in {}: {}", func.name, error_msg);
+                        }
                     }
                 }
             }
@@ -1597,14 +1608,17 @@ fn main() -> Result<()> {
         None
     };
 
-    // Show initialization message
-    println!("🔧 Initializing LoopSleuth...");
+    let json_mode = cli.format == "json";
+
+    if !json_mode {
+        println!("🔧 Initializing LoopSleuth...");
+    }
 
     // Initialize cache
     let cache = AnalysisCache::new(cli.cache_dir.clone(), !cli.no_cache)?;
 
     if cli.clear_cache {
-        println!("🗑️  Clearing cache...");
+        if !json_mode { println!("🗑️  Clearing cache..."); }
         cache.clear()?;
     }
 
@@ -1612,11 +1626,13 @@ fn main() -> Result<()> {
     let python_files = collect_python_files(python_path)?;
     let file_count = python_files.len();
 
-    println!("🔍 Scanning {} Python file(s)...", file_count);
-    println!("🔬 Running {} check(s): {}",
-        checks.len(),
-        checks.iter().map(|c| c.key.clone()).collect::<Vec<_>>().join(", ")
-    );
+    if !json_mode {
+        println!("🔍 Scanning {} Python file(s)...", file_count);
+        println!("🔬 Running {} check(s): {}",
+            checks.len(),
+            checks.iter().map(|c| c.key.clone()).collect::<Vec<_>>().join(", ")
+        );
+    }
 
     // First pass: count total functions
     let mut total_functions_count = 0;
@@ -1630,26 +1646,30 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(ref filter) = cli.filter_function {
-        println!("🔍 Filtering functions matching: \"{}\"", filter);
+    if !json_mode {
+        if let Some(ref filter) = cli.filter_function {
+            println!("🔍 Filtering functions matching: \"{}\"", filter);
+        }
+        println!("📊 Analyzing {} function(s)...\n", total_functions_count);
     }
-    println!("📊 Analyzing {} function(s)...\n", total_functions_count);
 
     // Run analysis with appropriate backend
     let output = if let Some(ref api) = api_config {
-        println!("   🌐 Using API endpoint: {}", api.url);
-        println!("   🤖 Model: {}", api.model_id);
-        if api.token.is_some() {
-            println!("   🔑 Authenticated with HF_TOKEN");
-        } else {
-            println!("   ⚠️  No HF_TOKEN set — requests may fail if endpoint requires auth");
+        if !json_mode {
+            println!("   🌐 Using API endpoint: {}", api.url);
+            println!("   🤖 Model: {}", api.model_id);
+            if api.token.is_some() {
+                println!("   🔑 Authenticated with HF_TOKEN");
+            } else {
+                println!("   ⚠️  No HF_TOKEN set — requests may fail if endpoint requires auth");
+            }
+            println!("   ✅ Ready!\n");
         }
-        println!("   ✅ Ready!\n");
 
         run_analysis_loop(
             &python_files, &checks, &cache, &config.dedupe,
             cli.filter_function.as_deref(), cli.skip_large, cli.max_tokens, cli.verbose,
-            total_functions_count,
+            cli.format == "json", total_functions_count,
             &mut |prompt, max_tokens, verbose| generate_response_api(api, prompt, max_tokens, verbose),
         )?
     } else {
@@ -1690,42 +1710,74 @@ fn main() -> Result<()> {
                 )
             })?;
 
-        println!("   ✅ Ready! (context: {} tokens)\n", cli.context_size);
+        if !json_mode {
+            println!("   ✅ Ready! (context: {} tokens)\n", cli.context_size);
+        }
 
         run_analysis_loop(
             &python_files, &checks, &cache, &config.dedupe,
             cli.filter_function.as_deref(), cli.skip_large, cli.max_tokens, cli.verbose,
-            total_functions_count,
+            cli.format == "json", total_functions_count,
             &mut |prompt, max_tokens, verbose| generate_response(&model, &mut ctx, prompt, max_tokens, verbose),
         )?
     };
 
     // Clear the progress line and show completion
-    print!("\r\x1b[K");
-    println!("✅ Analysis complete!\n");
-
-    // Flatten results for summary
-    let all_results: Vec<AnalysisResult> = output.file_results
-        .iter()
-        .flat_map(|fr| fr.results.iter())
-        .cloned()
-        .collect();
-
-    // Print concise summary
-    print_summary(&output.file_results, file_count, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache, &output.stats);
-
-    // Print detailed markdown report only if --details flag is set
-    if output.functions_with_issues > 0 && cli.details {
-        print_detailed_report(&all_results);
-    } else if output.functions_with_issues > 0 && !cli.details && cli.output.is_none() {
-        println!("💡 Tip: Use --details to see full analysis or --output FILE to save report");
-        println!();
+    if !json_mode {
+        print!("\r\x1b[K");
     }
 
-    // Save to file if requested (always includes full details)
-    if let Some(output_path) = &cli.output {
-        write_report_to_file(output_path, &all_results, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache)?;
-        println!("📄 Report saved to: {}", output_path.display());
+    if cli.format == "json" {
+        // JSON output mode — structured output for programmatic consumption
+        let json_report = serde_json::json!({
+            "total_functions": output.total_functions,
+            "functions_with_issues": output.functions_with_issues,
+            "files": output.file_results.iter().map(|fr| {
+                serde_json::json!({
+                    "path": fr.file_path,
+                    "results": fr.results.iter().map(|r| {
+                        serde_json::json!({
+                            "function_name": r.function.name,
+                            "class_name": r.function.class_name,
+                            "line_number": r.function.line_number,
+                            "issues": r.check_results.iter().filter(|cr| cr.has_issue).map(|cr| {
+                                serde_json::json!({
+                                    "check_key": cr.check_key,
+                                    "check_name": cr.check_name,
+                                    "confidence": extract_confidence_percentage(&cr.analysis),
+                                    "analysis": cr.analysis,
+                                    "solution": cr.solution,
+                                })
+                            }).collect::<Vec<_>>(),
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&json_report)?);
+    } else {
+        // Text output mode (default)
+        println!("✅ Analysis complete!\n");
+
+        let all_results: Vec<AnalysisResult> = output.file_results
+            .iter()
+            .flat_map(|fr| fr.results.iter())
+            .cloned()
+            .collect();
+
+        print_summary(&output.file_results, file_count, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache, &output.stats);
+
+        if output.functions_with_issues > 0 && cli.details {
+            print_detailed_report(&all_results);
+        } else if output.functions_with_issues > 0 && !cli.details && cli.output.is_none() {
+            println!("💡 Tip: Use --details to see full analysis or --output FILE to save report");
+            println!();
+        }
+
+        if let Some(output_path) = &cli.output {
+            write_report_to_file(output_path, &all_results, output.total_functions, output.functions_with_issues, &checks, &cache, cli.no_cache)?;
+            println!("📄 Report saved to: {}", output_path.display());
+        }
     }
 
     Ok(())
