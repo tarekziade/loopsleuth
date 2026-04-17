@@ -132,3 +132,11 @@ def necessary_comparison(items):
         for j in range(i + 1, len(items)):
             pairs.append((items[i], items[j]))
     return pairs
+
+
+def remove_all_occurrences(items, value):
+    """Quadratic: calling list.remove() in a loop is O(n) per call"""
+    result = list(items)
+    while value in result:
+        result.remove(value)
+    return result

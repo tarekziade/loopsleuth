@@ -119,15 +119,12 @@ def process_pr(
         # 3. Run loopsleuth
         issues = analyze_files(files_content, changed_functions)
 
-        # 4. Post comment
+        # 4. Post comment only if issues found
         if issues:
             body = format_comment(issues)
-        else:
-            body = format_clean_comment()
-
-        post_or_update_comment(
-            installation_id, repo_full_name, pr_number, body,
-        )
+            post_or_update_comment(
+                installation_id, repo_full_name, pr_number, body,
+            )
 
         log.info("Done with PR #%d — %d file(s) with issues", pr_number, len(issues))
 

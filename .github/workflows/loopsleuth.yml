@@ -15,7 +15,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./github-app
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          hf_token: ${{ secrets.HF_TOKEN }}
-          api_url: ${{ secrets.LOOPSLEUTH_API_URL }}
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.25.x"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Install loopsleuth
+        run: |
+          if [ -f "pyproject.toml" ] && grep -q 'name = "loopsleuth"' pyproject.toml; then
+            echo "Installing loopsleuth from source..."
+            pip install .
+          else
+            echo "Installing loopsleuth from PyPI..."
+            pip install loopsleuth
+          fi
+          echo "Verifying install..."
+          loopsleuth --help | head -5
+
+      - name: Analyze PR
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          LOOPSLEUTH_API_URL: ${{ secrets.LOOPSLEUTH_API_URL }}
+          LOOPSLEUTH_MAX_FILES: "15"
+          GH_TOKEN: ${{ github.token }}
+        run: python github-app/analyze_pr.py

@@ -868,10 +868,17 @@ fn dedupe_check_results(mut results: Vec<CheckResult>, rules: &[DedupeRule]) -> 
         if rule.prefer.is_empty() || rule.drop.is_empty() {
             continue;
         }
-        let has_prefer = results
-            .iter()
-            .any(|r| r.has_issue && r.check_key == rule.prefer);
-        if has_prefer {
+        let prefer_idx = results.iter().position(|r| r.has_issue && r.check_key == rule.prefer);
+        if let Some(idx) = prefer_idx {
+            // If the preferred result has no solution, steal one from a dropped result
+            if results[idx].solution.is_none() {
+                let stolen_solution = results.iter()
+                    .find(|r| r.has_issue && rule.drop.contains(&r.check_key) && r.solution.is_some())
+                    .and_then(|r| r.solution.clone());
+                if let Some(sol) = stolen_solution {
+                    results[idx].solution = Some(sol);
+                }
+            }
             results.retain(|r| !(r.has_issue && rule.drop.contains(&r.check_key)));
         }
     }
@@ -1224,10 +1231,13 @@ fn run_analysis_loop<F>(
 where
     F: FnMut(&str, i32, bool) -> Result<(String, bool, TokenStats)>,
 {
-    // Macro to print progress only when not in quiet mode
+    // Macro to print progress: stdout in text mode, stderr in json mode
     macro_rules! progress {
         ($($arg:tt)*) => {
-            if !quiet {
+            if quiet {
+                eprint!($($arg)*);
+                std::io::Write::flush(&mut std::io::stderr()).ok();
+            } else {
                 print!($($arg)*);
                 std::io::Write::flush(&mut std::io::stdout()).ok();
             }
@@ -1402,7 +1412,7 @@ where
                                     Some(Ok((optimized, diff)))
                                 });
 
-                            let (_optimized_code, diff) = match optimized_and_diff {
+                            let (optimized_code, diff) = match optimized_and_diff {
                                 Some(Ok(pair)) => pair,
                                 Some(Err(reason)) => {
                                     let failure_note = format!(
@@ -1454,7 +1464,8 @@ where
                                        progress_bar, progress_pct, current_func_num, total_functions_count,
                                        functions_with_issues, check.key);
 
-                                let verifier_prompt = check.format_verifier_prompt(&func, solution.as_ref().unwrap());
+                                let verifier_input = format!("```python\n{}\n```", optimized_code);
+                                let verifier_prompt = check.format_verifier_prompt(&func, &verifier_input);
                                 let verifier_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     generate_fn(&verifier_prompt, max_tokens, verbose)
                                 }))
@@ -1512,7 +1523,9 @@ where
                                progress_bar, progress_pct, current_func_num, total_functions_count,
                                functions_with_issues, check.key,
                                if error_msg.contains("too large") { "Too large" } else { "Error" });
-                        if !quiet {
+                        if quiet {
+                            eprintln!("\n   Debug: Error in {}: {}", func.name, error_msg);
+                        } else {
                             println!("\n   Debug: Error in {}: {}", func.name, error_msg);
                         }
                     }
@@ -1610,7 +1623,9 @@ fn main() -> Result<()> {
 
     let json_mode = cli.format == "json";
 
-    if !json_mode {
+    if json_mode {
+        eprintln!("🔧 Initializing LoopSleuth...");
+    } else {
         println!("🔧 Initializing LoopSleuth...");
     }
 
@@ -1618,7 +1633,8 @@ fn main() -> Result<()> {
     let cache = AnalysisCache::new(cli.cache_dir.clone(), !cli.no_cache)?;
 
     if cli.clear_cache {
-        if !json_mode { println!("🗑️  Clearing cache..."); }
+        if json_mode { eprintln!("🗑️  Clearing cache..."); }
+        else { println!("🗑️  Clearing cache..."); }
         cache.clear()?;
     }
 
@@ -1626,7 +1642,13 @@ fn main() -> Result<()> {
     let python_files = collect_python_files(python_path)?;
     let file_count = python_files.len();
 
-    if !json_mode {
+    if json_mode {
+        eprintln!("🔍 Scanning {} Python file(s)...", file_count);
+        eprintln!("🔬 Running {} check(s): {}",
+            checks.len(),
+            checks.iter().map(|c| c.key.clone()).collect::<Vec<_>>().join(", ")
+        );
+    } else {
         println!("🔍 Scanning {} Python file(s)...", file_count);
         println!("🔬 Running {} check(s): {}",
             checks.len(),
@@ -1646,7 +1668,9 @@ fn main() -> Result<()> {
         }
     }
 
-    if !json_mode {
+    if json_mode {
+        eprintln!("📊 Analyzing {} function(s)...", total_functions_count);
+    } else {
         if let Some(ref filter) = cli.filter_function {
             println!("🔍 Filtering functions matching: \"{}\"", filter);
         }
@@ -1655,7 +1679,9 @@ fn main() -> Result<()> {
 
     // Run analysis with appropriate backend
     let output = if let Some(ref api) = api_config {
-        if !json_mode {
+        if json_mode {
+            eprintln!("   🌐 API endpoint: {} (model: {})", api.url, api.model_id);
+        } else {
             println!("   🌐 Using API endpoint: {}", api.url);
             println!("   🤖 Model: {}", api.model_id);
             if api.token.is_some() {
@@ -1753,6 +1779,11 @@ fn main() -> Result<()> {
                     }).collect::<Vec<_>>(),
                 })
             }).collect::<Vec<_>>(),
+            "model": if let Some(ref api) = api_config { &api.model_id } else { "local" },
+            "token_usage": {
+                "input_tokens": output.stats.input_tokens,
+                "output_tokens": output.stats.output_tokens,
+            },
         });
         println!("{}", serde_json::to_string_pretty(&json_report)?);
     } else {

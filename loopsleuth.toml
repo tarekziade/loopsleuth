@@ -176,6 +176,10 @@ C) If you see nested loops over the same `items` doing comparisons/joins:
 - Consider building a dict/set keyed by the join key and doing O(1) lookups.
 - Preserve ordering semantics unless the original treats data as unordered.
 - Avoid refactors that change tie-breaking or output order.
+
+D) If you see `while x in list: list.remove(x)` or `list.remove(x)` in a loop:
+- Replace with a list comprehension: `result = [item for item in items if item != x]`
+- This avoids both the O(n) membership test and the O(n) remove call.
 """
 
 detection_prompt = "{template:detection_basis}"
@@ -220,9 +224,9 @@ B) `list.index(x)` in a loop:
 C) `list.pop(0)` in a loop:
 - If behavior is queue-like, use `collections.deque` and `popleft()` (hoist conversion once)
 
-D) `list.remove(x)` in a loop:
-- Prefer building a new list (filter) if semantics match.
-- If semantics are tricky (removing while iterating), keep behavior identical and add only a short comment if no safe change exists.
+D) `list.remove(x)` in a loop or `while x in list: list.remove(x)`:
+- Replace with a list comprehension: `result = [item for item in items if item != x]`
+- This avoids both the O(n) membership test and the O(n) remove call.
 """
 
 detection_prompt = "{template:detection_basis}"
