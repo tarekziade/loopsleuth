@@ -13,14 +13,17 @@ def bubble_sort(arr):
     return arr
 
 
-def find_duplicates(nums):
-    """Quadratic: nested iteration to find duplicates"""
-    duplicates = []
-    for i in range(len(nums)):
-        for j in range(i + 1, len(nums)):
-            if nums[i] == nums[j] and nums[i] not in duplicates:
-                duplicates.append(nums[i])
-    return duplicates
+def closest_pair_distance(values):
+    """Quadratic: brute-force closest pair — O(n²) nested comparison"""
+    min_dist = float("inf")
+    best = (None, None)
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            d = abs(values[i] - values[j])
+            if d < min_dist:
+                min_dist = d
+                best = (values[i], values[j])
+    return best, min_dist
 
 
 def matrix_multiply_naive(a, b):
