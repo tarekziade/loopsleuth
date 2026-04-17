@@ -49,7 +49,15 @@ runs:
 
     - name: Install loopsleuth
       shell: bash
-      run: pip install loopsleuth
+      run: |
+        # Install from local source if available (dogfooding), otherwise from PyPI
+        if [ -f "${{ github.workspace }}/pyproject.toml" ] && grep -q 'name = "loopsleuth"' "${{ github.workspace }}/pyproject.toml"; then
+          echo "Installing loopsleuth from source..."
+          pip install "${{ github.workspace }}"
+        else
+          echo "Installing loopsleuth from PyPI..."
+          pip install loopsleuth
+        fi
 
     - name: Run LoopSleuth analysis
       shell: bash

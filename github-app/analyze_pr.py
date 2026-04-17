@@ -6,6 +6,8 @@ Uses the GitHub API via `gh` CLI (pre-installed on all GitHub runners).
 """
 
 import ast
+import datetime
+import functools
 import json
 import os
 import re
@@ -13,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Force unbuffered output so CI streams logs in real time
+print = functools.partial(print, flush=True)  # noqa: A001
 
 # ---------------------------------------------------------------------------
 # Config
@@ -139,11 +144,12 @@ def extract_changed_lines(patch: str) -> list[int]:
 # 4. Function extractor — map lines to function names via AST
 # ---------------------------------------------------------------------------
 
-def find_changed_functions(source: str, changed_lines: list[int]) -> set[str]:
+def find_changed_functions(source: str, changed_lines: list[int]) -> dict[str, tuple[int, int]]:
+    """Return {name: (start_line, end_line)} for functions overlapping changed lines."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return set()
+        return {}
 
     functions: dict[str, tuple[int, int]] = {}
     for node in ast.walk(tree):
@@ -156,11 +162,34 @@ def find_changed_functions(source: str, changed_lines: list[int]) -> set[str]:
             if node.col_offset == 0:
                 functions[node.name] = (node.lineno, node.end_lineno or node.lineno)
 
-    result = set()
-    for name, (start, end) in functions.items():
-        if any(start <= line <= end for line in changed_lines):
-            result.add(name)
-    return result
+    return {
+        name: (start, end)
+        for name, (start, end) in functions.items()
+        if any(start <= line <= end for line in changed_lines)
+    }
+
+
+def extract_functions_source(source: str, func_ranges: dict[str, tuple[int, int]]) -> str:
+    """Extract only the specified functions from source, producing a valid Python file."""
+    lines = source.splitlines(keepends=True)
+    # Collect all imports at the top (so extracted functions can reference them)
+    import_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("import ", "from ")) or stripped == "":
+            import_lines.append(line)
+        elif stripped.startswith(("#", '"""', "'''")):
+            continue
+        else:
+            break
+
+    # Extract each function's lines
+    func_blocks = []
+    for _name, (start, end) in sorted(func_ranges.items(), key=lambda x: x[1][0]):
+        func_blocks.append("".join(lines[start - 1:end]))
+        func_blocks.append("\n\n")
+
+    return "".join(import_lines) + "\n" + "".join(func_blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -178,16 +207,45 @@ def run_loopsleuth(file_path: str) -> dict:
         cmd.extend(["--checks", CHECKS])
     cmd.append(file_path)
 
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=600,
+    print(f"    Running: {' '.join(cmd)}", flush=True)
+
+    # Stream stderr live so CI shows progress; capture stdout for JSON
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    if result.returncode != 0:
-        print(f"::warning::loopsleuth failed on {file_path}: {result.stderr.strip()}")
+
+    # Read stderr in a thread so it streams while stdout accumulates
+    import threading
+
+    stderr_lines: list[str] = []
+
+    def stream_stderr():
+        for line in proc.stderr:
+            line = line.rstrip()
+            stderr_lines.append(line)
+            print(f"    [loopsleuth] {line}", flush=True)
+
+    t = threading.Thread(target=stream_stderr, daemon=True)
+    t.start()
+
+    stdout = proc.stdout.read()
+    proc.wait(timeout=600)
+    t.join(timeout=5)
+
+    print(f"    Exit code: {proc.returncode}", flush=True)
+    if proc.returncode != 0:
+        print(f"::warning::loopsleuth failed on {file_path}: {' '.join(stderr_lines)[-500:]}")
         return {}
+    print(f"    Stdout length: {len(stdout)} chars", flush=True)
     try:
-        return json.loads(result.stdout)
+        data = json.loads(stdout)
+        n_funcs = data.get("total_functions", 0)
+        n_issues = data.get("functions_with_issues", 0)
+        print(f"    Result: {n_funcs} function(s) analyzed, {n_issues} with issues", flush=True)
+        return data
     except json.JSONDecodeError:
         print(f"::warning::Invalid JSON from loopsleuth for {file_path}")
+        print(f"    Raw stdout: {stdout[:300]}", flush=True)
         return {}
 
 
@@ -195,28 +253,43 @@ def run_loopsleuth(file_path: str) -> dict:
 # 6. Format the PR comment
 # ---------------------------------------------------------------------------
 
-def format_comment(issues: list[dict]) -> str:
+def _run_url() -> str:
+    """Build a link to the current GitHub Actions run."""
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return ""
+
+
+def format_comment(issues: list[dict], total_tokens: int = 0, model: str = "", head_sha: str = "", repo: str = "") -> str:
     total_issues = sum(
         len(f["issues"]) for file in issues for f in file["results"]
     )
     total_funcs = sum(len(file["results"]) for file in issues)
     total_files = len(issues)
 
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
     lines = [
         COMMENT_MARKER,
-        "## LoopSleuth Performance Analysis",
+        "## :x: LoopSleuth Performance Analysis",
         "",
-        f"Found **{total_issues} issue(s)** in "
-        f"**{total_funcs} function(s)** across "
-        f"**{total_files} file(s)**.",
+        f"Found **{total_issues} {'issue' if total_issues == 1 else 'issues'}** in "
+        f"**{total_funcs} {'function' if total_funcs == 1 else 'functions'}** across "
+        f"**{total_files} {'file' if total_files == 1 else 'files'}**.",
         "",
     ]
+
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
 
     for file in issues:
         path = file["path"]
         n = sum(len(f["issues"]) for f in file["results"])
+        file_url = f"{server}/{repo}/blob/{head_sha}/{path}" if repo and head_sha else ""
         lines.append(
-            f"<details>\n<summary><b>{path}</b> &mdash; {n} issue(s)</summary>\n"
+            f"<details>\n<summary><b>{path}</b> &mdash; {n} {'issue' if n == 1 else 'issues'}</summary>\n"
         )
 
         for func in file["results"]:
@@ -224,39 +297,64 @@ def format_comment(issues: list[dict]) -> str:
             cls = func.get("class_name")
             display = f"{cls}.{name}" if cls else name
             line_num = func.get("line_number", "?")
+            line_url = f"{file_url}#L{line_num}" if file_url and line_num != "?" else ""
+            loc = f"[line {line_num}]({line_url})" if line_url else f"line {line_num}"
 
             for issue in func["issues"]:
                 check = issue.get("check_name", issue.get("check_key", "?"))
                 confidence = issue.get("confidence", 0)
                 solution = issue.get("solution")
 
-                lines.append(f"### `{display}` (line {line_num})")
+                lines.append(f"### [`{display}` ({path}:{line_num})]({line_url})" if line_url else f"### `{display}` ({path}:{line_num})")
                 lines.append("")
                 lines.append(f"**{check}** (confidence: {confidence}%)")
                 lines.append("")
+
+                # Show the DETAIL line from the analysis
+                analysis = issue.get("analysis", "")
+                for aline in analysis.splitlines():
+                    if aline.strip().startswith("DETAIL:"):
+                        detail = aline.strip()[7:].strip()
+                        if detail:
+                            lines.append(f"> {detail}")
+                            lines.append("")
+                        break
 
                 if solution:
                     lines.append("<details>\n<summary>Suggested fix</summary>\n")
                     lines.append(solution)
                     lines.append("\n</details>\n")
+                else:
+                    lines.append("*No safe fix suggested — consider reviewing manually.*\n")
 
         lines.append("</details>\n")
 
     lines.append("---")
-    lines.append(
-        "*Generated by [LoopSleuth](https://github.com/tarekziade/loopsleuth)*"
-    )
+    lines.append(_format_footer(now, total_tokens, model))
     return "\n".join(lines)
 
 
-def format_clean_comment() -> str:
+def format_clean_comment(total_tokens: int = 0, model: str = "") -> str:
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     return (
         f"{COMMENT_MARKER}\n"
-        "## LoopSleuth Performance Analysis\n\n"
+        "## :white_check_mark: LoopSleuth Performance Analysis\n\n"
         "No performance issues detected in the changed Python functions.\n\n"
         "---\n"
-        "*Generated by [LoopSleuth](https://github.com/tarekziade/loopsleuth)*"
+        + _format_footer(now, total_tokens, model)
     )
+
+
+def _format_footer(now: str, total_tokens: int, model: str) -> str:
+    parts = [f"[LoopSleuth](https://github.com/tarekziade/loopsleuth)"]
+    if model:
+        parts.append(f"model: `{model}`")
+    if total_tokens:
+        parts.append(f"{total_tokens:,} tokens")
+    run = _run_url()
+    if run:
+        parts.append(f"[full log]({run})")
+    return f"*{' | '.join(parts)} | {now}*"
 
 
 # ---------------------------------------------------------------------------
@@ -264,26 +362,44 @@ def format_clean_comment() -> str:
 # ---------------------------------------------------------------------------
 
 def post_or_update_comment(pr_number: int, body: str) -> None:
-    # List existing comments and look for our marker
-    comments_json = gh(
-        "pr", "view", str(pr_number),
-        "--json", "comments",
-    )
-    comments = json.loads(comments_json).get("comments", [])
+    # Write body to a temp file to avoid shell escaping issues
+    body_file = Path(tempfile.mktemp(suffix=".md"))
+    body_file.write_text(body)
 
-    for c in comments:
-        if COMMENT_MARKER in (c.get("body") or ""):
-            # Update existing comment
-            comment_url = c.get("url", "")
-            # Extract comment ID from the URL or use the API
-            if comment_url:
-                gh("api", comment_url, "-X", "PATCH", "-f", f"body={body}")
-                print(f"Updated existing comment on PR #{pr_number}")
+    # For API PATCH, we need a JSON file
+    json_file = Path(tempfile.mktemp(suffix=".json"))
+    json_file.write_text(json.dumps({"body": body}))
+
+    try:
+        # Look for an existing LoopSleuth comment to update
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        comments_raw = gh(
+            "api", f"/repos/{repo}/issues/{pr_number}/comments",
+            "--paginate", "-q", ".[].id",
+        )
+        for comment_id in comments_raw.strip().splitlines():
+            comment_id = comment_id.strip()
+            if not comment_id:
+                continue
+            comment_body = gh(
+                "api", f"/repos/{repo}/issues/comments/{comment_id}",
+                "-q", ".body",
+            )
+            if COMMENT_MARKER in comment_body:
+                gh(
+                    "api", f"/repos/{repo}/issues/comments/{comment_id}",
+                    "-X", "PATCH",
+                    "--input", str(json_file),
+                )
+                print(f"Updated existing comment {comment_id} on PR #{pr_number}")
                 return
 
-    # No existing comment — create new one
-    gh("pr", "comment", str(pr_number), "--body", body)
-    print(f"Posted new comment on PR #{pr_number}")
+        # No existing comment — create new one
+        gh("pr", "comment", str(pr_number), "--body-file", str(body_file))
+        print(f"Posted new comment on PR #{pr_number}")
+    finally:
+        body_file.unlink(missing_ok=True)
+        json_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +411,16 @@ def main():
     pr_number = pr["number"]
     print(f"Analyzing PR #{pr_number} on {pr['repo']}")
 
+    # Check loopsleuth version
+    try:
+        ver = subprocess.run(["loopsleuth", "--help"], capture_output=True, text=True)
+        has_api = "--api-url" in ver.stdout
+        has_json = "--format" in ver.stdout
+        print(f"  loopsleuth installed: --api-url={'yes' if has_api else 'NO'}, --format={'yes' if has_json else 'NO'}")
+    except FileNotFoundError:
+        print("::error::loopsleuth not found in PATH")
+        sys.exit(1)
+
     # Get changed Python files
     changed_files = get_changed_py_files(pr_number)
     if not changed_files:
@@ -304,6 +430,9 @@ def main():
     print(f"Found {len(changed_files)} changed Python file(s)")
 
     all_issues: list[dict] = []
+    total_input_tokens = 0
+    total_output_tokens = 0
+    model_name = ""
 
     with tempfile.TemporaryDirectory(prefix="loopsleuth_") as tmpdir:
         for cf in changed_files:
@@ -328,24 +457,33 @@ def main():
 
             # Find which functions were changed
             changed_lines = extract_changed_lines(patch)
+            print(f"  {rel_path}: {len(changed_lines)} changed line(s)")
             changed_funcs = find_changed_functions(content, changed_lines)
 
             if not changed_funcs:
-                print(f"  {rel_path}: no functions changed, skipping")
+                print(f"  {rel_path}: no functions overlap with changed lines, skipping")
                 continue
 
-            print(f"  {rel_path}: {len(changed_funcs)} function(s) changed: {', '.join(changed_funcs)}")
+            print(f"  {rel_path}: {len(changed_funcs)} function(s) changed: {', '.join(changed_funcs.keys())}")
 
-            # Write to temp and run loopsleuth
+            # Write ONLY the changed functions to the temp file
             tmp_file = Path(tmpdir) / rel_path
             tmp_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp_file.write_text(content)
+            extracted = extract_functions_source(content, changed_funcs)
+            tmp_file.write_text(extracted)
+            print(f"    Extracted {len(changed_funcs)} function(s) to temp file ({len(extracted)} chars)")
 
             result = run_loopsleuth(str(tmp_file))
             if not result:
                 continue
 
-            # Filter results to only changed functions
+            usage = result.get("token_usage", {})
+            total_input_tokens += usage.get("input_tokens", 0)
+            total_output_tokens += usage.get("output_tokens", 0)
+            if not model_name:
+                model_name = result.get("model", "")
+
+            # Collect issues (all results are relevant since we only gave it changed functions)
             file_issues = []
             for file_result in result.get("files", []):
                 for func_result in file_result.get("results", []):
@@ -353,31 +491,35 @@ def main():
                     class_name = func_result.get("class_name")
                     qualified = f"{class_name}.{func_name}" if class_name else func_name
 
-                    if func_name not in changed_funcs and qualified not in changed_funcs:
-                        continue
-
                     issues = func_result.get("issues", [])
                     if issues:
+                        for iss in issues:
+                            print(f"    ISSUE in {qualified}: {iss.get('check_name')} (confidence: {iss.get('confidence')}%)")
+                        # Use original line number from the full file
+                        original_line = changed_funcs.get(func_name, changed_funcs.get(qualified, (0, 0)))[0]
                         file_issues.append({
                             "function_name": func_name,
                             "class_name": class_name,
-                            "line_number": func_result.get("line_number", 0),
+                            "line_number": original_line,
                             "issues": issues,
                         })
+                    else:
+                        print(f"    {qualified}: clean")
 
             if file_issues:
                 all_issues.append({"path": rel_path, "results": file_issues})
 
-    # Post comment
+    total_tokens = total_input_tokens + total_output_tokens
+
+    # Post comment only if issues found; fail the run so PR shows red
     if all_issues:
         total = sum(len(f["issues"]) for file in all_issues for f in file["results"])
-        print(f"\nFound {total} issue(s) — posting comment")
-        body = format_comment(all_issues)
+        print(f"\nFound {total} issue(s) — posting comment ({total_tokens} tokens, model: {model_name})")
+        body = format_comment(all_issues, total_tokens, model_name, pr["head_sha"], pr["repo"])
+        post_or_update_comment(pr_number, body)
+        sys.exit(1)  # fail the check so the PR status is red
     else:
-        print("\nNo issues found — posting clean report")
-        body = format_clean_comment()
-
-    post_or_update_comment(pr_number, body)
+        print(f"\nNo performance issues found ({total_tokens} tokens, model: {model_name})")
 
 
 if __name__ == "__main__":
