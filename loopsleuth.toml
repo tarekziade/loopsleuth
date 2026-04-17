@@ -180,6 +180,13 @@ C) If you see nested loops over the same `items` doing comparisons/joins:
 D) If you see `while x in list: list.remove(x)` or `list.remove(x)` in a loop:
 - Replace with a list comprehension: `result = [item for item in items if item != x]`
 - This avoids both the O(n) membership test and the O(n) remove call.
+
+E) For any other Ω(N²) pattern not covered above:
+- Replace O(n) operations inside loops with O(1) equivalents.
+- Common strategies: sets for membership, dicts for lookups,
+  sorting + single-pass for pairwise comparisons.
+- If the nested loop computes a reduction (sum, min, max),
+  look for a single-pass or mathematical shortcut.
 """
 
 detection_prompt = "{template:detection_basis}"
